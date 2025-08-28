@@ -22,7 +22,8 @@ from io import BytesIO
 import psycopg2
 import requests
 from flask import Flask, request, send_file, redirect, url_for
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+
 
 # ------------------------------------------------------------------------------
 # Flask + config
