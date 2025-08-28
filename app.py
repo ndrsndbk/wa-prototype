@@ -60,167 +60,108 @@ try:
 except Exception:
     _coffee_src = None
 
-
 def render_stamp_card(visits: int) -> BytesIO:
     """
-    Render the loyalty card as a PNG (1080x1080) in the improved designer style.
-    Backward-compatible with older Pillow: falls back when rounded_rectangle/textbbox
-    are not available.
+    Render the loyalty card PNG (1080x1080) with generous spacing.
+    - All text 20% smaller than earlier mock, 'LOGO' 50% smaller.
+    - Footer text positioned lower (H - 74).
+    Returns an in-memory PNG buffer.
     """
-    # Clamp
     visits = max(0, min(10, int(visits)))
 
-    # Canvas
+    # Canvas & palette
     W, H = 1080, 1080
-    img = Image.new("RGBA", (W, H), (0,0,0,0))
-    d = ImageDraw.Draw(img, "RGBA")
+    bg  = (0, 0, 0)
+    fg  = (255, 255, 255)
+    red = (220, 53, 69)
 
-    # Palette
-    bg_top     = (43, 30, 24)
-    bg_bottom  = (26, 18, 15)
-    cream      = (238, 231, 220)
-    accent     = (174, 120, 84)
-    accent_dk  = (132, 89, 62)
-    ring       = (170, 164, 158)
+    im = Image.new("RGB", (W, H), bg)
+    d  = ImageDraw.Draw(im)
 
-    # Helpers
-    def _grad(draw, box, top, bottom):
-        x0, y0, x1, y1 = box
-        h = y1 - y0
-        for i in range(h):
-            t = i / max(h-1, 1)
-            r = int(top[0] + (bottom[0]-top[0]) * t)
-            g = int(top[1] + (bottom[1]-top[1]) * t)
-            b = int(top[2] + (bottom[2]-top[2]) * t)
-            draw.line([(x0, y0+i), (x1, y0+i)], fill=(r,g,b))
+    # Fonts (scaled)
+    title_f = _font(int(150 * 0.8), bold=True)  # 20% smaller
+    sub_f   = _font(int(64  * 0.8), bold=True)
+    foot_f  = _font(int(52  * 0.8), bold=True)
+    logo_f  = _font(int(80  * 0.5), bold=True)   # 50% smaller
 
-    def _measure(text, font):
-        try:
-            # Pillow >= 8
-            left, top, right, bottom = d.textbbox((0, 0), text, font=font)
-            return right - left, bottom - top
-        except Exception:
-            # Older Pillow
-            return d.textsize(text, font=font)
-
-    def _center_text(y, text, font, fill=cream):
-        w, h = _measure(text, font)
-        d.text(((W - w)//2, y), text, font=font, fill=fill)
+    def center_text(y, text, font, color=fg):
+        left, top, right, bottom = d.textbbox((0, 0), text, font=font)
+        w, h = right - left, bottom - top
+        d.text(((W - w) // 2, y), text, font=font, fill=color)
         return h
 
-    def _bean(draw, center, w, h, color):
-        cx, cy = center
-        bbox = [cx - w//2, cy - h//2, cx + w//2, cy + h//2]
-        draw.ellipse(bbox, fill=color)
-        inset = int(min(w, h) * 0.18)
-        arc_box = [bbox[0]+inset, bbox[1]+inset, bbox[2]-inset, bbox[3]-inset]
-        draw.arc(arc_box, start=110, end=290, fill=(255,255,255,180), width=max(1, w//16))
-
-    def _rounded_rect(draw, xy, radius, fill):
-        # Try native rounded_rectangle
-        if hasattr(draw, "rounded_rectangle"):
-            draw.rounded_rectangle(xy, radius=radius, fill=fill)
-            return
-        # Fallback: draw via mask
-        x0, y0, x1, y1 = xy
-        w, h = x1-x0, y1-y0
-        mask = Image.new("L", (w, h), 0)
-        md = ImageDraw.Draw(mask)
-        try:
-            md.rounded_rectangle((0,0,w,h), radius=radius, fill=255)
-        except Exception:
-            # Worst-case: manual corners
-            md.rectangle((radius, 0, w-radius, h), fill=255)
-            md.rectangle((0, radius, w, h-radius), fill=255)
-            for cx, cy in [(radius, radius), (w-radius, radius), (radius, h-radius), (w-radius, h-radius)]:
-                md.pieslice((cx-radius, cy-radius, cx+radius, cy+radius), 0, 360, fill=255)
-        rect = Image.new("RGBA", (w, h), fill)
-        img.alpha_composite(rect, dest=(x0, y0), source=rect, mask=mask)
-
-    # Background gradient
-    _grad(d, (0,0,W,H), bg_top, bg_bottom)
-
-    # Fonts
-    title_f = _font(120, bold=True)
-    body_f  = _font(48, bold=True)
-    small_f = _font(52, bold=True)
+    # Layout constants (roomy, no overlaps)
+    MARGIN = int(H * 0.03)
+    TITLE_Y      = 56
+    LOGO_Y       = 330 + MARGIN   # rings center Y
+    SUBTITLE_Y   = 535 + MARGIN
+    SUBTITLE_GAP = 70
+    GRID_TOP     = SUBTITLE_Y + SUBTITLE_GAP + 100
+    ROW_GAP      = 180
+    COL_GAP      = 180
+    CIRCLE_R     = 72
 
     # Title
-    _center_text(60, "COFFEE SHOP", title_f, cream)
+    center_text(TITLE_Y, "COFFEE SHOP", title_f)
 
-    # Logo badge + soft shadow
-    r = 120
-    cx, cy = W//2, 330
-    shadow = Image.new("RGBA", (W,H), (0,0,0,0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse([cx-r, cy-r+8, cx+r, cy+r+8], fill=(0,0,0,140))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(16))
-    img.alpha_composite(shadow)
-    d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=cream)
+    # Logo rings
+    cx, cy = W // 2, LOGO_Y
+    r_outer, r_inner = 130, 95
+    d.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer], outline=fg, width=6)
+    d.ellipse([cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner], outline=fg, width=4)
 
-    logo_f = _font(64, bold=True)
-    lw, lh = _measure("LOGO", logo_f)
-    d.text((cx - lw//2, cy - lh//2), "LOGO", font=logo_f, fill=bg_bottom)
+    # "LOGO" text centered inside rings
+    lw, lh = d.textbbox((0, 0), "LOGO", font=logo_f)[2:]
+    d.text((cx - lw // 2, cy - lh // 2), "LOGO", font=logo_f, fill=fg)
 
-    # Subtitle (same copy as original behavior)
-    _center_text(480, "THANK YOU FOR VISITING TODAY!", body_f, cream)
+    # Subtitle
+    center_text(SUBTITLE_Y, "THANK YOU FOR VISITING TODAY!", sub_f)
 
-    # Stamps grid
-    cols, rows = 5, 2
-    dia = 140
-    start_y = 610
-    row_gap = 150
-    col_gap = (W - 2*120 - cols*dia) // (cols - 1)
-    start_x = (W - (cols*dia + (cols-1)*col_gap)) // 2
-    centers = []
-    for r_i in range(rows):
-        y = start_y + r_i * row_gap
-        for c_i in range(cols):
-            x = start_x + c_i * (dia + col_gap) + dia // 2
-            centers.append((x, y))
+    # Grid (2 x 5) centered
+    total_width = 4 * COL_GAP
+    left_x = (W - total_width) // 2
 
-    for idx, (x, y) in enumerate(centers):
-        sh = Image.new("RGBA", (W,H), (0,0,0,0))
-        sdraw = ImageDraw.Draw(sh)
-        sdraw.ellipse([x - dia//2, y - dia//2 + 6, x + dia//2, y + dia//2 + 6], fill=(0,0,0,140))
-        sh = sh.filter(ImageFilter.GaussianBlur(10))
-        img.alpha_composite(sh)
+    def circle_bbox(x, y):
+        return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
 
-        if idx < visits:
-            d.ellipse([x - dia//2, y - dia//2, x + dia//2, y + dia//2], fill=accent, outline=accent_dk, width=6)
-            _bean(d, (x, y), int(dia*0.38), int(dia*0.58), accent_dk)
-        else:
-            d.ellipse([x - dia//2, y - dia//2, x + dia//2, y + dia//2], outline=ring, width=10)
+    def draw_empty(x, y):
+        d.ellipse(circle_bbox(x, y), outline=fg, width=6)
 
-    # Footer banner (rounded)
-    banner_w, banner_h = 780, 90
-    bx = (W - banner_w)//2
-    by = 900
-    # Shadow
-    sh = Image.new("RGBA", (W,H), (0,0,0,0))
-    sdraw = ImageDraw.Draw(sh)
-    try:
-        sdraw.rounded_rectangle([bx, by+8, bx+banner_w, by+banner_h+8], radius=28, fill=(0,0,0,140))
-    except Exception:
-        # simple shadow fallback
-        sdraw.rectangle([bx, by+8, bx+banner_w, by+banner_h+8], fill=(0,0,0,140))
-    sh = sh.filter(ImageFilter.GaussianBlur(12))
-    img.alpha_composite(sh)
+    # Coffee icon (tinted red) prepared once
+    icon_img = None
+    if _coffee_src is not None:
+        target = int(CIRCLE_R * 1.15)
+        icon_gray = _coffee_src.resize((target, target), Image.LANCZOS)
+        red_rgba = Image.new("RGBA", icon_gray.size, red + (255,))
+        alpha = ImageOps.invert(icon_gray)  # black lines -> alpha via invert
+        stamped = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
+        stamped.paste(red_rgba, (0, 0), alpha)
+        icon_img = stamped
 
-    # Banner
-    try:
-        d.rounded_rectangle([bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
-    except Exception:
-        _rounded_rect(d, [bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
+    def draw_stamp(x, y):
+        # double red ring + coffee icon
+        d.ellipse(circle_bbox(x, y), outline=red, width=10)
+        d.ellipse(circle_bbox(x, y), outline=red, width=3)
+        if icon_img:
+            ix, iy = icon_img.size
+            im.paste(icon_img, (x - ix // 2, y - iy // 2), icon_img)
 
-    _center_text(by + banner_h//2 - small_f.size//10, "10 STAMPS = 1 FREE COFFEE", small_f, cream)
+    k = 0
+    for row in range(2):
+        y = GRID_TOP + row * ROW_GAP
+        for col in range(5):
+            x = left_x + col * COL_GAP
+            (draw_stamp if k < visits else draw_empty)(x, y)
+            k += 1
 
-    # Return PNG
+    # Footer (nudged lower at H - 74)
+    center_text(H - 74, "10 STAMPS = 1 FREE COFFEE", foot_f)
+
+    # Return PNG bytes
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    im.save(buf, format="PNG")
     buf.seek(0)
     return buf
-
 
 def build_card_url(visits: int) -> str:
     base = (HOST_URL or request.url_root).rstrip("/")
