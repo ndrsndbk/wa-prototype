@@ -44,14 +44,47 @@ conn = psycopg2.connect(DATABASE_URL) if DATABASE_URL else None
 # Helpers: fonts, card rendering, WhatsApp senders, URL build
 # ------------------------------------------------------------------------------
 
+
+# ---- Font loader (Montserrat / Open Sans with safe fallbacks) ----
+_FONT_CACHE = {}
+
+FONT_CANDIDATES = {
+    "bold": [
+        "./fonts/Montserrat-ExtraBold.ttf",
+        "./fonts/Montserrat-Bold.ttf",
+        "./fonts/OpenSans-SemiBold.ttf",
+        "Montserrat-ExtraBold.ttf",
+        "Montserrat-Bold.ttf",
+        "OpenSans-SemiBold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ],
+    "regular": [
+        "./fonts/OpenSans-Regular.ttf",
+        "./fonts/Montserrat-Regular.ttf",
+        "OpenSans-Regular.ttf",
+        "Montserrat-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ],
+}
+
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Try DejaVu (available on most Linux images); fall back to default."""
-    try:
-        path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold \
-               else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        return ImageFont.truetype(path, size=size)
-    except Exception:
-        return ImageFont.load_default()
+    key = ("bold" if bold else "regular", size)
+    if key in _FONT_CACHE:
+        return _FONT_CACHE[key]
+    paths = FONT_CANDIDATES["bold" if bold else "regular"]
+    for p in paths:
+        try:
+            f = ImageFont.truetype(p, size=size)
+            _FONT_CACHE[key] = f
+            return f
+        except Exception:
+            continue
+    # Final fallback – bitmap font
+    f = ImageFont.load_default()
+    _FONT_CACHE[key] = f
+    return f
 
 # Optional coffee icon (black lines on white). You can provide your own PNG via env.
 COFFEE_ICON_PATH = os.getenv("COFFEE_ICON_PATH", "coffee.png")
@@ -61,117 +94,141 @@ except Exception:
     _coffee_src = None
 
 
+
 def render_stamp_card(visits: int) -> BytesIO:
     """
-    Render the loyalty card as a PNG (1080x1080) in the improved designer style.
-    Backward-compatible with older Pillow: falls back when rounded_rectangle/textbbox
-    are not available.
+    Render the loyalty card as a PNG (1080x1080) in the premium designer style.
+    - Warm coffee gradient + subtle paper grain + soft vignette
+    - Clean empty rings (no inner shadow)
+    - Filled stamps have soft drop shadow + bean icon
+    - Dynamic footer bar width so text is always fully covered
+    Backward-compatible with older Pillow: falls back if rounded/textbbox/blur are missing.
     """
-    # Clamp
+    # Clamp visits (0..10)
     visits = max(0, min(10, int(visits)))
 
     # Canvas
     W, H = 1080, 1080
-    img = Image.new("RGBA", (W, H), (0,0,0,0))
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img, "RGBA")
 
-    # Palette
-    bg_top     = (43, 30, 24)
-    bg_bottom  = (26, 18, 15)
-    cream      = (238, 231, 220)
-    accent     = (174, 120, 84)
-    accent_dk  = (132, 89, 62)
-    ring       = (170, 164, 158)
+    # Palette tuned to mock
+    bg_top     = (46, 33, 27)    # brown top
+    bg_bottom  = (30, 21, 17)    # brown bottom
+    cream      = (241, 233, 222) # warm cream (text/badge)
+    accent     = (169, 119, 86)  # filled stamp + footer
+    accent_dk  = (120, 83, 60)   # stamp outline + bean
+    ring       = (155, 147, 139) # empty ring outline
 
-    # Helpers
+    # ---------- helpers ----------
     def _grad(draw, box, top, bottom):
         x0, y0, x1, y1 = box
         h = y1 - y0
         for i in range(h):
-            t = i / max(h-1, 1)
-            r = int(top[0] + (bottom[0]-top[0]) * t)
-            g = int(top[1] + (bottom[1]-top[1]) * t)
-            b = int(top[2] + (bottom[2]-top[2]) * t)
-            draw.line([(x0, y0+i), (x1, y0+i)], fill=(r,g,b))
+            t = i / max(h - 1, 1)
+            r = int(top[0] + (bottom[0] - top[0]) * t)
+            g = int(top[1] + (bottom[1] - top[1]) * t)
+            b = int(top[2] + (bottom[2] - top[2]) * t)
+            draw.line([(x0, y0 + i), (x1, y0 + i)], fill=(r, g, b))
 
     def _measure(text, font):
         try:
-            # Pillow >= 8
-            left, top, right, bottom = d.textbbox((0, 0), text, font=font)
-            return right - left, bottom - top
+            L, T, R, B = d.textbbox((0, 0), text, font=font)
+            return R - L, B - T
         except Exception:
-            # Older Pillow
             return d.textsize(text, font=font)
-
-    def _center_text(y, text, font, fill=cream):
-        w, h = _measure(text, font)
-        d.text(((W - w)//2, y), text, font=font, fill=fill)
-        return h
 
     def _bean(draw, center, w, h, color):
         cx, cy = center
-        bbox = [cx - w//2, cy - h//2, cx + w//2, cy + h//2]
+        bbox = [cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2]
         draw.ellipse(bbox, fill=color)
         inset = int(min(w, h) * 0.18)
-        arc_box = [bbox[0]+inset, bbox[1]+inset, bbox[2]-inset, bbox[3]-inset]
-        draw.arc(arc_box, start=110, end=290, fill=(255,255,255,180), width=max(1, w//16))
+        arc_box = [bbox[0] + inset, bbox[1] + inset, bbox[2] - inset, bbox[3] - inset]
+        draw.arc(arc_box, start=110, end=290, fill=(255, 255, 255, 180), width=max(1, w // 16))
 
     def _rounded_rect(draw, xy, radius, fill):
-        # Try native rounded_rectangle
+        # Try native rounded_rectangle; otherwise draw via mask
         if hasattr(draw, "rounded_rectangle"):
-            draw.rounded_rectangle(xy, radius=radius, fill=fill)
-            return
-        # Fallback: draw via mask
+            draw.rounded_rectangle(xy, radius=radius, fill=fill); return
         x0, y0, x1, y1 = xy
-        w, h = x1-x0, y1-y0
+        w, h = x1 - x0, y1 - y0
         mask = Image.new("L", (w, h), 0)
         md = ImageDraw.Draw(mask)
         try:
-            md.rounded_rectangle((0,0,w,h), radius=radius, fill=255)
+            md.rounded_rectangle((0, 0, w, h), radius=radius, fill=255)
         except Exception:
-            # Worst-case: manual corners
-            md.rectangle((radius, 0, w-radius, h), fill=255)
-            md.rectangle((0, radius, w, h-radius), fill=255)
-            for cx, cy in [(radius, radius), (w-radius, radius), (radius, h-radius), (w-radius, h-radius)]:
-                md.pieslice((cx-radius, cy-radius, cx+radius, cy+radius), 0, 360, fill=255)
+            md.rectangle((radius, 0, w - radius, h), fill=255)
+            md.rectangle((0, radius, w, h - radius), fill=255)
+            for cx, cy in [(radius, radius), (w - radius, radius), (radius, h - radius), (w - radius, h - radius)]:
+                md.pieslice((cx - radius, cy - radius, cx + radius, cy + radius), 0, 360, fill=255)
         rect = Image.new("RGBA", (w, h), fill)
         img.alpha_composite(rect, dest=(x0, y0), source=rect, mask=mask)
 
-    # Background gradient
-    _grad(d, (0,0,W,H), bg_top, bg_bottom)
+    # ---------- background ----------
+    _grad(d, (0, 0, W, H), bg_top, bg_bottom)
+
+    # Subtle paper grain
+    try:
+        noise = Image.effect_noise((W, H), 32)
+        grain = Image.merge("RGBA", (noise, noise, noise, Image.new("L", (W, H), 18)))
+        img = Image.alpha_composite(img, grain)
+    except Exception:
+        pass
+
+    # Soft vignette
+    try:
+        vign = Image.new("L", (W, H), 0)
+        vg = ImageDraw.Draw(vign)
+        max_r = int(max(W, H) * 1.05)
+        min_r = int(max(W, H) * 0.60)
+        for r in range(min_r, max_r, 6):
+            a = int(255 * (r - min_r) / max(1, (max_r - min_r)))
+            vg.ellipse((W//2 - r, H//2 - r, W//2 + r, H//2 + r), outline=a)
+        vign = vign.filter(ImageFilter.GaussianBlur(60))
+        img = Image.composite(Image.new("RGBA", (W, H), (0, 0, 0, 80)), img, vign)
+    except Exception:
+        pass
+
+    d = ImageDraw.Draw(img, "RGBA")
 
     # Fonts
-    title_f = _font(120, bold=True)
-    body_f  = _font(48, bold=True)
-    small_f = _font(52, bold=True)
+    title_f = _font(122, bold=True)
+    tag_f   = _font(50,  bold=True)
+    small_f = _font(50,  bold=True)
+    logo_f  = _font(62,  bold=True)
 
     # Title
-    _center_text(60, "COFFEE SHOP", title_f, cream)
+    ttw, tth = _measure("COFFEE SHOP", title_f)
+    d.text(((W - ttw)//2, 90), "COFFEE SHOP", font=title_f, fill=cream)
 
     # Logo badge + soft shadow
-    r = 120
-    cx, cy = W//2, 330
-    shadow = Image.new("RGBA", (W,H), (0,0,0,0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse([cx-r, cy-r+8, cx+r, cy+r+8], fill=(0,0,0,140))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(16))
-    img.alpha_composite(shadow)
-    d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=cream)
-
-    logo_f = _font(64, bold=True)
+    r = 118
+    cx, cy = W // 2, 340
+    sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(sh)
+    sdraw.ellipse([cx - r, cy - r + 10, cx + r, cy + r + 10], fill=(0, 0, 0, 160))
+    try:
+        sh = sh.filter(ImageFilter.GaussianBlur(18))
+    except Exception:
+        pass
+    img = Image.alpha_composite(img, sh)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=cream)
     lw, lh = _measure("LOGO", logo_f)
-    d.text((cx - lw//2, cy - lh//2), "LOGO", font=logo_f, fill=bg_bottom)
+    d.text((cx - lw // 2, cy - lh // 2), "LOGO", font=logo_f, fill=bg_bottom)
 
-    # Subtitle (same copy as original behavior)
-    _center_text(480, "THANK YOU FOR VISITING TODAY!", body_f, cream)
+    # Tagline (from mock)
+    tag = "YOUR COFFEE JOURNEY STARTS HERE"
+    tw, th = _measure(tag, tag_f)
+    d.text(((W - tw)//2, 510), tag, font=tag_f, fill=cream)
 
-    # Stamps grid
+    # ---------- stamps ----------
     cols, rows = 5, 2
-    dia = 140
-    start_y = 610
+    dia = 138
+    start_y = 645
     row_gap = 150
-    col_gap = (W - 2*120 - cols*dia) // (cols - 1)
-    start_x = (W - (cols*dia + (cols-1)*col_gap)) // 2
+    col_gap = (W - 2 * 120 - cols * dia) // (cols - 1)
+    start_x = (W - (cols * dia + (cols - 1) * col_gap)) // 2
+
     centers = []
     for r_i in range(rows):
         y = start_y + r_i * row_gap
@@ -180,46 +237,60 @@ def render_stamp_card(visits: int) -> BytesIO:
             centers.append((x, y))
 
     for idx, (x, y) in enumerate(centers):
-        sh = Image.new("RGBA", (W,H), (0,0,0,0))
-        sdraw = ImageDraw.Draw(sh)
-        sdraw.ellipse([x - dia//2, y - dia//2 + 6, x + dia//2, y + dia//2 + 6], fill=(0,0,0,140))
-        sh = sh.filter(ImageFilter.GaussianBlur(10))
-        img.alpha_composite(sh)
-
         if idx < visits:
-            d.ellipse([x - dia//2, y - dia//2, x + dia//2, y + dia//2], fill=accent, outline=accent_dk, width=6)
-            _bean(d, (x, y), int(dia*0.38), int(dia*0.58), accent_dk)
-        else:
-            d.ellipse([x - dia//2, y - dia//2, x + dia//2, y + dia//2], outline=ring, width=10)
+            # Soft shadow ONLY for filled stamps
+            sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sdraw = ImageDraw.Draw(sh)
+            sdraw.ellipse([x - dia//2, y - dia//2 + 7, x + dia//2, y + dia//2 + 7], fill=(0, 0, 0, 140))
+            try:
+                sh = sh.filter(ImageFilter.GaussianBlur(12))
+            except Exception:
+                pass
+            img = Image.alpha_composite(img, sh)
 
-    # Footer banner (rounded)
-    banner_w, banner_h = 780, 90
-    bx = (W - banner_w)//2
-    by = 900
-    # Shadow
-    sh = Image.new("RGBA", (W,H), (0,0,0,0))
+            d.ellipse([x - dia // 2, y - dia // 2, x + dia // 2, y + dia // 2],
+                      fill=accent, outline=accent_dk, width=6)
+            _bean(d, (x, y), int(dia * 0.40), int(dia * 0.60), accent_dk)
+        else:
+            d.ellipse([x - dia // 2, y - dia // 2, x + dia // 2, y + dia // 2],
+                      outline=ring, width=9)
+
+    # ---------- footer (dynamic width) ----------
+    text = "10 STAMPS = 1 FREE COFFEE"
+    tw, th = _measure(text, small_f)
+    pad_x, pad_y = 44, 18
+    banner_w = min(W - 160, tw + 2 * pad_x)
+    banner_h = th + 2 * pad_y
+    bx = (W - banner_w) // 2
+    by = 925
+
+    # Footer shadow
+    sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     sdraw = ImageDraw.Draw(sh)
     try:
-        sdraw.rounded_rectangle([bx, by+8, bx+banner_w, by+banner_h+8], radius=28, fill=(0,0,0,140))
+        sdraw.rounded_rectangle([bx, by + 10, bx + banner_w, by + banner_h + 10], radius=28, fill=(0, 0, 0, 150))
     except Exception:
-        # simple shadow fallback
-        sdraw.rectangle([bx, by+8, bx+banner_w, by+banner_h+8], fill=(0,0,0,140))
-    sh = sh.filter(ImageFilter.GaussianBlur(12))
-    img.alpha_composite(sh)
-
-    # Banner
+        sdraw.rectangle([bx, by + 10, bx + banner_w, by + banner_h + 10], fill=(0, 0, 0, 150))
     try:
-        d.rounded_rectangle([bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
+        sh = sh.filter(ImageFilter.GaussianBlur(16))
     except Exception:
-        _rounded_rect(d, [bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
+        pass
+    img = Image.alpha_composite(img, sh)
 
-    _center_text(by + banner_h//2 - small_f.size//10, "10 STAMPS = 1 FREE COFFEE", small_f, cream)
+    # Footer bar
+    d = ImageDraw.Draw(img, "RGBA")
+    try:
+        d.rounded_rectangle([bx, by, bx + banner_w, by + banner_h], radius=28, fill=accent)
+    except Exception:
+        _rounded_rect(d, [bx, by, bx + banner_w, by + banner_h], radius=28, fill=accent)
+    d.text(((W - tw)//2, by + (banner_h - th)//2), text, font=small_f, fill=cream)
 
-    # Return PNG
+    # Encode PNG (your route expects .png)
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
 
 
 def build_card_url(visits: int) -> str:
