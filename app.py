@@ -21,7 +21,7 @@ from io import BytesIO
 
 import psycopg2
 import requests
-from flask import Flask, request, send_file, redirect, url_for
+from flask import Flask, request, send_file, redirect, url_for, make_response
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 
@@ -393,9 +393,15 @@ def handle_webhook():
 
 @app.route("/card/<int:visits>.png")
 def card_png(visits: int):
-    """Preferred card endpoint: /card/<visits>.png"""
-    png = render_stamp_card(visits)
-    return send_file(png, mimetype="image/png", max_age=300)
+    """Serve PNG with explicit Content-Length and no range to satisfy WhatsApp fetcher."""
+    buf = render_stamp_card(visits)
+    data = buf.getvalue()
+    resp = make_response(data)
+    resp.headers['Content-Type'] = 'image/png'
+    resp.headers['Content-Length'] = str(len(data))
+    resp.headers['Cache-Control'] = 'public, max-age=600, immutable'
+    resp.headers['Accept-Ranges'] = 'none'
+    return resp
 
 @app.route("/card")
 def card_query():
