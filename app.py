@@ -59,10 +59,12 @@ try:
 except Exception:
     _coffee_src = None
 
+
 def render_stamp_card(visits: int) -> BytesIO:
     """
     Render the loyalty card as a PNG (1080x1080) in the improved designer style.
-    Only aesthetics change vs. the original; routes/behavior remain identical.
+    Backward-compatible with older Pillow: falls back when rounded_rectangle/textbbox
+    are not available.
     """
     # Clamp
     visits = max(0, min(10, int(visits)))
@@ -72,7 +74,7 @@ def render_stamp_card(visits: int) -> BytesIO:
     img = Image.new("RGBA", (W, H), (0,0,0,0))
     d = ImageDraw.Draw(img, "RGBA")
 
-    # Palette (coffee-inspired)
+    # Palette
     bg_top     = (43, 30, 24)
     bg_bottom  = (26, 18, 15)
     cream      = (238, 231, 220)
@@ -91,9 +93,17 @@ def render_stamp_card(visits: int) -> BytesIO:
             b = int(top[2] + (bottom[2]-top[2]) * t)
             draw.line([(x0, y0+i), (x1, y0+i)], fill=(r,g,b))
 
+    def _measure(text, font):
+        try:
+            # Pillow >= 8
+            left, top, right, bottom = d.textbbox((0, 0), text, font=font)
+            return right - left, bottom - top
+        except Exception:
+            # Older Pillow
+            return d.textsize(text, font=font)
+
     def _center_text(y, text, font, fill=cream):
-        left, top, right, bottom = d.textbbox((0, 0), text, font=font)
-        w, h = right - left, bottom - top
+        w, h = _measure(text, font)
         d.text(((W - w)//2, y), text, font=font, fill=fill)
         return h
 
@@ -104,6 +114,27 @@ def render_stamp_card(visits: int) -> BytesIO:
         inset = int(min(w, h) * 0.18)
         arc_box = [bbox[0]+inset, bbox[1]+inset, bbox[2]-inset, bbox[3]-inset]
         draw.arc(arc_box, start=110, end=290, fill=(255,255,255,180), width=max(1, w//16))
+
+    def _rounded_rect(draw, xy, radius, fill):
+        # Try native rounded_rectangle
+        if hasattr(draw, "rounded_rectangle"):
+            draw.rounded_rectangle(xy, radius=radius, fill=fill)
+            return
+        # Fallback: draw via mask
+        x0, y0, x1, y1 = xy
+        w, h = x1-x0, y1-y0
+        mask = Image.new("L", (w, h), 0)
+        md = ImageDraw.Draw(mask)
+        try:
+            md.rounded_rectangle((0,0,w,h), radius=radius, fill=255)
+        except Exception:
+            # Worst-case: manual corners
+            md.rectangle((radius, 0, w-radius, h), fill=255)
+            md.rectangle((0, radius, w, h-radius), fill=255)
+            for cx, cy in [(radius, radius), (w-radius, radius), (radius, h-radius), (w-radius, h-radius)]:
+                md.pieslice((cx-radius, cy-radius, cx+radius, cy+radius), 0, 360, fill=255)
+        rect = Image.new("RGBA", (w, h), fill)
+        img.alpha_composite(rect, dest=(x0, y0), source=rect, mask=mask)
 
     # Background gradient
     _grad(d, (0,0,W,H), bg_top, bg_bottom)
@@ -116,7 +147,7 @@ def render_stamp_card(visits: int) -> BytesIO:
     # Title
     _center_text(60, "COFFEE SHOP", title_f, cream)
 
-    # Logo badge with soft shadow
+    # Logo badge + soft shadow
     r = 120
     cx, cy = W//2, 330
     shadow = Image.new("RGBA", (W,H), (0,0,0,0))
@@ -125,15 +156,15 @@ def render_stamp_card(visits: int) -> BytesIO:
     shadow = shadow.filter(ImageFilter.GaussianBlur(16))
     img.alpha_composite(shadow)
     d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=cream)
-    # "LOGO" label
+
     logo_f = _font(64, bold=True)
-    lw, lh = d.textbbox((0,0), "LOGO", font=logo_f)[2:]
+    lw, lh = _measure("LOGO", logo_f)
     d.text((cx - lw//2, cy - lh//2), "LOGO", font=logo_f, fill=bg_bottom)
 
-    # Subtitle (keep original copy)
+    # Subtitle (same copy as original behavior)
     _center_text(480, "THANK YOU FOR VISITING TODAY!", body_f, cream)
 
-    # Stamp grid (2x5)
+    # Stamps grid
     cols, rows = 5, 2
     dia = 140
     start_y = 610
@@ -153,22 +184,34 @@ def render_stamp_card(visits: int) -> BytesIO:
         sdraw.ellipse([x - dia//2, y - dia//2 + 6, x + dia//2, y + dia//2 + 6], fill=(0,0,0,140))
         sh = sh.filter(ImageFilter.GaussianBlur(10))
         img.alpha_composite(sh)
+
         if idx < visits:
             d.ellipse([x - dia//2, y - dia//2, x + dia//2, y + dia//2], fill=accent, outline=accent_dk, width=6)
             _bean(d, (x, y), int(dia*0.38), int(dia*0.58), accent_dk)
         else:
             d.ellipse([x - dia//2, y - dia//2, x + dia//2, y + dia//2], outline=ring, width=10)
 
-    # Footer rounded banner
+    # Footer banner (rounded)
     banner_w, banner_h = 780, 90
     bx = (W - banner_w)//2
     by = 900
+    # Shadow
     sh = Image.new("RGBA", (W,H), (0,0,0,0))
     sdraw = ImageDraw.Draw(sh)
-    sdraw.rounded_rectangle([bx, by+8, bx+banner_w, by+banner_h+8], radius=28, fill=(0,0,0,140))
+    try:
+        sdraw.rounded_rectangle([bx, by+8, bx+banner_w, by+banner_h+8], radius=28, fill=(0,0,0,140))
+    except Exception:
+        # simple shadow fallback
+        sdraw.rectangle([bx, by+8, bx+banner_w, by+banner_h+8], fill=(0,0,0,140))
     sh = sh.filter(ImageFilter.GaussianBlur(12))
     img.alpha_composite(sh)
-    d.rounded_rectangle([bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
+
+    # Banner
+    try:
+        d.rounded_rectangle([bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
+    except Exception:
+        _rounded_rect(d, [bx, by, bx+banner_w, by+banner_h], radius=28, fill=accent)
+
     _center_text(by + banner_h//2 - small_f.size//10, "10 STAMPS = 1 FREE COFFEE", small_f, cream)
 
     # Return PNG
@@ -176,6 +219,7 @@ def render_stamp_card(visits: int) -> BytesIO:
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
 
 def build_card_url(visits: int) -> str:
     base = (HOST_URL or request.url_root).rstrip("/")
