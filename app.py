@@ -1,3 +1,4 @@
+
 """
 Flask application for WhatsApp Cloud API stamp-card prototype (+ Flows support).
 
@@ -61,10 +62,9 @@ conn = psycopg2.connect(DATABASE_URL) if DATABASE_URL else None
 # ------------------------------------------------------------------------------
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    \"\"\"Try DejaVu (available on most Linux images); fall back to default.\"\"\"
+    """Try DejaVu (available on most Linux images); fall back to default."""
     try:
-        path = \"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf\" if bold \
-               else \"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf\"
+        path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold                else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         return ImageFont.truetype(path, size=size)
     except Exception:
         return ImageFont.load_default()
@@ -77,12 +77,12 @@ except Exception:
     _coffee_src = None
 
 def render_stamp_card(visits: int) -> BytesIO:
-    \"\"\"
+    """
     Render the loyalty card PNG (1080x1080) with generous spacing.
     - All text 20% smaller than earlier mock, 'LOGO' 50% smaller.
     - Footer text positioned lower (H - 74).
     Returns an in-memory PNG buffer.
-    \"\"\"
+    """
     visits = max(0, min(10, int(visits)))
 
     # Canvas & palette
@@ -184,7 +184,7 @@ def build_card_url(visits: int) -> str:
     return f"{base}/card/{int(visits)}.png"
 
 def _wa_post(payload: Dict[str, Any]) -> Optional[requests.Response]:
-    \"\"\"Low-level POST to WhatsApp Graph API.\"\"\"
+    """Low-level POST to WhatsApp Graph API."""
     if not (WHATSAPP_TOKEN and PHONE_NUMBER_ID):
         raise RuntimeError("WhatsApp token or phone number ID not configured")
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
@@ -220,10 +220,10 @@ def send_image(to: str, link: str) -> None:
     _wa_post(payload)
 
 def send_template_with_flow(to: str) -> None:
-    \"\"\"Send the approved template that contains a Flow button.
+    """Send the approved template that contains a Flow button.
     The button-to-Flow wiring is defined inside the approved template in Meta.
     You only need to specify the name + language here.
-    \"\"\"
+    """
     if not FLOW_TEMPLATE_NAME:
         raise RuntimeError("FLOW_TEMPLATE_NAME not configured")
     payload = {
@@ -245,20 +245,20 @@ def send_template_with_flow(to: str) -> None:
 # ------------------------------------------------------------------------------
 
 def save_flow_submission(customer_id: str, response_data: Dict[str, Any]) -> None:
-    \"\"\"Upsert customer profile fields captured by the Flow.
+    """Upsert customer profile fields captured by the Flow.
     Expected keys (case-insensitive): birthday, preferred_promo, favorite_flavor, marketing_opt_in
-    \"\"\"
+    """
     if conn is None:
         print("DB not configured; skipping profile upsert")
         return
 
     # Normalize keys defensively
-    norm = { (k or \"\").strip().lower(): v for k, v in (response_data or {}).items() }
+    norm = { (k or "").strip().lower(): v for k, v in (response_data or {}).items() }
 
-    birthday         = norm.get(\"birthday\") or norm.get(\"date_of_birth\") or None
-    preferred_promo  = norm.get(\"preferred_promo\") or norm.get(\"promo_preference\") or None
-    favorite_flavor  = norm.get(\"favorite_flavor\") or norm.get(\"favourite_flavour\") or None
-    marketing_opt_in = norm.get(\"marketing_opt_in\") or norm.get(\"opt_in\") or norm.get(\"consent\")
+    birthday         = norm.get("birthday") or norm.get("date_of_birth") or None
+    preferred_promo  = norm.get("preferred_promo") or norm.get("promo_preference") or None
+    favorite_flavor  = norm.get("favorite_flavor") or norm.get("favourite_flavour") or None
+    marketing_opt_in = norm.get("marketing_opt_in") or norm.get("opt_in") or norm.get("consent")
 
     # Convert booleans where possible
     def to_bool(x):
@@ -268,9 +268,9 @@ def save_flow_submission(customer_id: str, response_data: Dict[str, Any]) -> Non
             return bool(x)
         if isinstance(x, str):
             t = x.strip().lower()
-            if t in (\"yes\",\"true\",\"y\",\"1\",\"on\",\"agree\",\"consent\"):
+            if t in ("yes","true","y","1","on","agree","consent"):
                 return True
-            if t in (\"no\",\"false\",\"n\",\"0\",\"off\",\"disagree\"):
+            if t in ("no","false","n","0","off","disagree"):
                 return False
         return None
 
@@ -279,7 +279,7 @@ def save_flow_submission(customer_id: str, response_data: Dict[str, Any]) -> Non
     with conn:
         with conn.cursor() as cur:
             # Ensure table exists (idempotent)
-            cur.execute(\"\"\"
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS customer_profiles (
                   customer_id TEXT PRIMARY KEY,
                   birthday DATE,
@@ -288,9 +288,9 @@ def save_flow_submission(customer_id: str, response_data: Dict[str, Any]) -> Non
                   marketing_opt_in BOOLEAN DEFAULT FALSE,
                   updated_at TIMESTAMPTZ DEFAULT NOW()
                 )
-            \"\"\")
+            """)
             # Upsert
-            cur.execute(\"\"\"
+            cur.execute("""
                 INSERT INTO customer_profiles
                   (customer_id, birthday, preferred_promo, favorite_flavor, marketing_opt_in, updated_at)
                 VALUES
@@ -302,11 +302,11 @@ def save_flow_submission(customer_id: str, response_data: Dict[str, Any]) -> Non
                   favorite_flavor = EXCLUDED.favorite_flavor,
                   marketing_opt_in = EXCLUDED.marketing_opt_in,
                   updated_at = NOW()
-            \"\"\", (customer_id, birthday, preferred_promo, favorite_flavor, marketing_opt_in))
+            """, (customer_id, birthday, preferred_promo, favorite_flavor, marketing_opt_in))
 
-    print(f\"Saved Flow submission for {customer_id}: \"
-          f\"birthday={birthday}, preferred_promo={preferred_promo}, "
-          f\"favorite_flavor={favorite_flavor}, marketing_opt_in={marketing_opt_in}\")
+    print(f"Saved Flow submission for {customer_id}: "
+          f"birthday={birthday}, preferred_promo={preferred_promo}, "
+          f"favorite_flavor={favorite_flavor}, marketing_opt_in={marketing_opt_in}")
 
 
 # ------------------------------------------------------------------------------
@@ -324,33 +324,33 @@ def verify_webhook():
 
 
 def _extract_flow_response(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    \"\"\"Try to extract a Flow submission payload from the incoming message.
+    """Try to extract a Flow submission payload from the incoming message.
     Meta uses 'interactive' with type 'nfm_reply' for Flows; the data often lives in
     interactive.nfm_reply.response_json (string) or .response (object).
     We'll support both shapes defensively.
-    \"\"\"
-    interactive = message.get(\"interactive\") or {}
+    """
+    interactive = message.get("interactive") or {}
     if not interactive:
         return None
 
     # nfm_reply path (Flows)
-    nfm = interactive.get(\"nfm_reply\")
+    nfm = interactive.get("nfm_reply")
     if nfm:
         # response_json may be a JSON string
-        resp_json = nfm.get(\"response_json\")
+        resp_json = nfm.get("response_json")
         if isinstance(resp_json, str):
             try:
                 return json.loads(resp_json)
             except Exception:
                 pass
         # or response dict may already be structured
-        resp_obj = nfm.get(\"response\") or nfm.get(\"data\") or None
+        resp_obj = nfm.get("response") or nfm.get("data") or None
         if isinstance(resp_obj, dict):
             return resp_obj
 
     # Fallback: some older shapes (unlikely, but handle gracefully)
-    if interactive.get(\"type\") in (\"flow\",\"nfm_reply\"):
-        payload = interactive.get(\"payload\") or interactive.get(\"response\") or None
+    if interactive.get("type") in ("flow","nfm_reply"):
+        payload = interactive.get("payload") or interactive.get("response") or None
         if isinstance(payload, dict):
             return payload
 
@@ -400,21 +400,21 @@ def handle_webhook():
 
                 with conn:
                     with conn.cursor() as cur:
-                        cur.execute(\"\"\"
+                        cur.execute("""
                             CREATE TABLE IF NOT EXISTS customers (
                                 customer_id TEXT PRIMARY KEY,
                                 number_of_visits INT DEFAULT 0,
                                 last_visit_at TIMESTAMPTZ
                             )
-                        \"\"\")
-                        cur.execute(\"\"\"
+                        """)
+                        cur.execute("""
                             INSERT INTO customers (customer_id, number_of_visits, last_visit_at)
                             VALUES (%s, 1, NOW())
                             ON CONFLICT (customer_id)
                             DO UPDATE SET number_of_visits = customers.number_of_visits + 1,
                                           last_visit_at = NOW()
                             RETURNING number_of_visits
-                        \"\"\", (from_number,))
+                        """, (from_number,))
                         visits = cur.fetchone()[0]
 
                 visits = max(1, min(10, visits))
@@ -433,9 +433,9 @@ def handle_webhook():
                             if row:
                                 flavor, promo = row
                                 if flavor:
-                                    personalized = f\"Thanks! You now have {visits} stamp(s). ☕️ P.S. We'll note your {flavor} preference.\"
+                                    personalized = f"Thanks! You now have {visits} stamp(s). ☕️ P.S. We'll note your {flavor} preference."
                                 elif promo:
-                                    personalized = f\"Thanks! You now have {visits} stamp(s). 📣 We'll tailor more {promo}-style promos for you.\"
+                                    personalized = f"Thanks! You now have {visits} stamp(s). 📣 We'll tailor more {promo}-style promos for you."
                 except Exception as _:
                     pass
 
@@ -464,13 +464,13 @@ def handle_webhook():
 
 @app.route("/card/<int:visits>.png")
 def card_png(visits: int):
-    \"\"\"Preferred card endpoint: /card/<visits>.png\"\"\"
+    """Preferred card endpoint: /card/<visits>.png"""
     png = render_stamp_card(visits)
-    return send_file(png, mimetype="image/png", max_age=300)
+    return send_file(png, mimetype="image/png", cache_timeout=300)
 
 @app.route("/card")
 def card_query():
-    \"\"\"Legacy: /card?n=<visits> -> redirect to PNG route.\"\"\"
+    """Legacy: /card?n=<visits> -> redirect to PNG route."""
     try:
         n = int(request.args.get("n", 0))
     except ValueError:
