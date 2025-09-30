@@ -4,3 +4,4 @@ requests
 psycopg2-binary
 Pillow
 gunicorn
+supabase==2.5.0
