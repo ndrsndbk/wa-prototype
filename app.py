@@ -33,102 +33,114 @@ try:
 except Exception:
     pass
 
-# ------------------------------------------------------------------------------
 # ========================= BEGIN: IMAGE RENDERING BLOCK =========================
-# ------------------------------------------------------------------------------
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 def _font(size: int, bold: bool = False):
     """Try DejaVu (present on most Linux images); fall back to default."""
     try:
         path = (
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            if bold
-            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         )
         return ImageFont.truetype(path, size=size)
     except Exception:
         return ImageFont.load_default()
 
-# Optional stamp icon (grayscale source). If missing, stamps render as rings only.
+# Optional stamp icon (grayscale source). If missing, stamps still render.
 COFFEE_ICON_PATH = os.getenv("COFFEE_ICON_PATH", "coffee.png")
 try:
     _coffee_src = Image.open(COFFEE_ICON_PATH).convert("L")
 except Exception:
-    _coffee_src = None  # no icon available; still renders fine
+    _coffee_src = None  # stamps will be solid red with no icon overlay
 
 def render_stamp_card(visits: int) -> BytesIO:
+    """Render the loyalty stamp card as a PNG and return an in-memory buffer."""
     visits = max(0, min(10, int(visits)))
+
+    # Canvas + palette
     W, H = 1080, 1080
     bg, fg, red = (0, 0, 0), (255, 255, 255), (220, 53, 69)
 
     im = Image.new("RGB", (W, H), bg)
     d  = ImageDraw.Draw(im)
 
+    # Fonts
     title_f = _font(120, bold=True)
-    sub_f   = _font(50, bold=True)
-    foot_f  = _font(40, bold=True)
-    logo_f  = _font(40, bold=True)
+    sub_f   = _font(50,  bold=True)
+    foot_f  = _font(40,  bold=True)
+    logo_f  = _font(40,  bold=True)
 
-    # Title
-    w_title, _ = d.textbbox((0, 0), "COFFEE SHOP", font=title_f)[2:]
-    d.text(((W - w_title)//2, 56), "COFFEE SHOP", font=title_f, fill=fg)
+    # --- header: COFFEE SHOP ---
+    title_box = d.textbbox((0, 0), "COFFEE SHOP", font=title_f)
+    title_w   = title_box[2] - title_box[0]
+    d.text(((W - title_w)//2, 56), "COFFEE SHOP", font=title_f, fill=fg)
 
-    # Concentric circles for logo
-    logo_center = (W // 2, 300)
-    d.ellipse([logo_center[0]-90, logo_center[1]-90, logo_center[0]+90, logo_center[1]+90], outline=fg, width=6)
-    d.ellipse([logo_center[0]-70, logo_center[1]-70, logo_center[0]+70, logo_center[1]+70], outline=fg, width=6)
-
-    # FIX: Center the word "LOGO" inside the circles
+    # --- logo placeholder (concentric rings, centered LOGO text) ---
+    logo_center = (W // 2, 330)
+    for r in (100, 80):
+        d.ellipse([logo_center[0]-r, logo_center[1]-r,
+                   logo_center[0]+r, logo_center[1]+r],
+                  outline=fg, width=6)
     logo_text = "LOGO"
-    w_logo, h_logo = d.textbbox((0, 0), logo_text, font=logo_f)[2:]
-    d.text((logo_center[0] - w_logo//2, logo_center[1] - h_logo//2),
+    lbox = d.textbbox((0, 0), logo_text, font=logo_f)
+    lw, lh = lbox[2] - lbox[0], lbox[3] - lbox[1]
+    d.text((logo_center[0] - lw//2, logo_center[1] - lh//2),
            logo_text, font=logo_f, fill=fg)
 
-    # Thank you text
-    w_thanks, _ = d.textbbox((0, 0), "THANK YOU FOR VISITING TODAY!", font=sub_f)[2:]
-    d.text(((W - w_thanks)//2, 500), "THANK YOU FOR VISITING TODAY!", font=sub_f, fill=fg)
+    # --- thank-you line ---
+    sub_text = "THANK YOU FOR VISITING TODAY!"
+    sbox = d.textbbox((0, 0), sub_text, font=sub_f)
+    sw = sbox[2] - sbox[0]
+    d.text(((W - sw)//2, 568), sub_text, font=sub_f, fill=fg)
 
-    # Stamp grid
-    CIRCLE_R, ROW_GAP, COL_GAP, GRID_TOP = 72, 180, 180, 600
+    # --- stamp grid (lowered to avoid overlap) ---
+    CIRCLE_R, ROW_GAP, COL_GAP, GRID_TOP = 72, 180, 180, 720
     left_x = (W - 4 * COL_GAP) // 2
-    def circle_bbox(x, y): return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
 
-    def draw_empty(x,y): d.ellipse(circle_bbox(x,y), outline=fg, width=6)
-def draw_stamp(x, y):
-    # Draw a solid red circle
-    d.ellipse(circle_bbox(x, y), fill=red, outline=red, width=6)
+    def circle_bbox(x, y):
+        return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
 
-    # Optionally overlay the coffee icon in white if available
-    if _coffee_src:
-        icon_size = int(CIRCLE_R * 1.2)
-        icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
-        white_overlay = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
-        stamped = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-        stamped.paste(white_overlay, (0, 0), icon_gray)  
-        im.paste(stamped, (x - icon_size//2, y - icon_size//2), stamped)
+    # Solid-red stamp with white coffee overlay
+    def draw_stamp(x, y):
+        # solid red disk + red outline
+        d.ellipse(circle_bbox(x, y), fill=red, outline=red, width=6)
 
+        # optional white coffee overlay derived from grayscale icon
+        if _coffee_src is not None:
+            icon_size = int(CIRCLE_R * 1.2)  # tweak 1.0–1.4 to taste
+            icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
+            white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
+            # Use icon_gray as alpha to cut the white overlay
+            white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
+            white_icon.paste(white_rgba, (0, 0), icon_gray)
+            im.paste(white_icon, (x - icon_size//2, y - icon_size//2), white_icon)
 
+    def draw_empty(x, y):
+        d.ellipse(circle_bbox(x, y), outline=fg, width=6)
+
+    # paint the grid
     k = 0
     for row in range(2):
-        y = GRID_TOP + row*ROW_GAP
+        y = GRID_TOP + row * ROW_GAP
         for col in range(5):
-            x = left_x + col*COL_GAP
+            x = left_x + col * COL_GAP
             (draw_stamp if k < visits else draw_empty)(x, y)
             k += 1
 
-    # Footer
-    w_foot, _ = d.textbbox((0, 0), "10 STAMPS = 1 FREE COFFEE", font=foot_f)[2:]
-    d.text(((W - w_foot)//2, H - 74), "10 STAMPS = 1 FREE COFFEE", font=foot_f, fill=fg)
+    # --- footer ---
+    foot_text = "10 STAMPS = 1 FREE COFFEE"
+    fbox = d.textbbox((0, 0), foot_text, font=foot_f)
+    fw   = fbox[2] - fbox[0]
+    d.text(((W - fw)//2, H - 74), foot_text, font=foot_f, fill=fg)
 
+    # Return PNG buffer
     buf = BytesIO()
     im.save(buf, format="PNG")
     buf.seek(0)
     return buf
-
-
-# ------------------------------------------------------------------------------
 # ========================== END: IMAGE RENDERING BLOCK ==========================
-# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # WhatsApp helpers
