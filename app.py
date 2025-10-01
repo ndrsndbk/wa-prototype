@@ -1,7 +1,9 @@
 """
 Flask app for WhatsApp Cloud API loyalty card prototype.
 - Uses supabase-py (HTTP) instead of psycopg2 (TCP)
-- Fixed image layout: restored logo rings + lowered stamp grid
+- Image fixes: concentric logo rings, centered "LOGO", lowered grid
+- Stamped circles: solid red + white coffee icon overlay
+- New "REPORT" trigger for weekly owner summary
 """
 import os
 import datetime
@@ -33,16 +35,16 @@ try:
 except Exception:
     pass
 
+# ------------------------------------------------------------------------------
 # ========================= BEGIN: IMAGE RENDERING BLOCK =========================
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-
+# ------------------------------------------------------------------------------
 def _font(size: int, bold: bool = False):
     """Try DejaVu (present on most Linux images); fall back to default."""
     try:
         path = (
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            if bold
+            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         )
         return ImageFont.truetype(path, size=size)
     except Exception:
@@ -141,6 +143,7 @@ def render_stamp_card(visits: int) -> BytesIO:
     buf.seek(0)
     return buf
 # ========================== END: IMAGE RENDERING BLOCK ==========================
+# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # WhatsApp helpers
@@ -198,13 +201,14 @@ def handle_webhook():
         from_number = message.get("from")
         text = ((message.get("text") or {}).get("body") or "").strip().upper()
 
+        # --- simple test image ---
         if text == "TEST":
             send_image(from_number, build_card_url(0))
             send_text(from_number, "👋 Thanks for testing! Here's your demo loyalty card.")
             return "ok", 200
 
+        # --- record a sale/visit ---
         if text == "SALE":
-            # read current visits
             row = (
                 sb.table("customers")
                   .select("number_of_visits")
@@ -215,7 +219,6 @@ def handle_webhook():
             )
             visits = (row["number_of_visits"] + 1) if row else 1
 
-            # write back
             sb.table("customers").upsert({
                 "customer_id": from_number,
                 "number_of_visits": visits,
@@ -228,6 +231,36 @@ def handle_webhook():
                 send_text(from_number, "🎉 Free coffee unlocked! Show this to the barista.")
             else:
                 send_text(from_number, f"Thanks for your visit! You now have {visits} stamp(s).")
+            return "ok", 200
+
+        # --- REPORT trigger for owner ---
+        if text == "REPORT":
+            # 1) Total customers (all rows)
+            all_rows = sb.table("customers").select("customer_id").execute().data or []
+            total_customers = len(all_rows)
+
+            # 2) Active in last 7 days
+            seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
+            active_rows = (
+                sb.table("customers")
+                  .select("customer_id")
+                  .gte("last_visit_at", seven_days_ago)
+                  .execute()
+                  .data or []
+            )
+            active_count = len(active_rows)
+
+            # 3) Growth vs total (%)
+            growth_pct = (active_count / total_customers * 100) if total_customers > 0 else 0.0
+
+            report_text = (
+                "📊 *Weekly Report*\n\n"
+                f"Active customers (last 7 days): {active_count}\n"
+                f"Growth vs total: {growth_pct:.1f}%\n\n"
+                "Here's the link to your dashboard:\n"
+                "https://wa-prototype-dashboard-1.streamlit.app/"
+            )
+            send_text(from_number, report_text)
             return "ok", 200
 
     except Exception as exc:
