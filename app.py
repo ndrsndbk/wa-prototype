@@ -94,11 +94,19 @@ def render_stamp_card(visits: int) -> BytesIO:
     def circle_bbox(x, y): return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
 
     def draw_empty(x,y): d.ellipse(circle_bbox(x,y), outline=fg, width=6)
-    def draw_stamp(x,y):
-        d.ellipse(circle_bbox(x,y), outline=red, width=10)
-        if _coffee_src:
-            icon_gray = _coffee_src.resize((int(CIRCLE_R*1.5), int(CIRCLE_R*1.5)), Image.LANCZOS)
-            im.paste(icon_gray, (x-int(CIRCLE_R*0.75), y-int(CIRCLE_R*0.75)), icon_gray)
+def draw_stamp(x, y):
+    # Draw a solid red circle
+    d.ellipse(circle_bbox(x, y), fill=red, outline=red, width=6)
+
+    # Optionally overlay the coffee icon in white if available
+    if _coffee_src:
+        icon_size = int(CIRCLE_R * 1.2)
+        icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
+        white_overlay = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
+        stamped = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
+        stamped.paste(white_overlay, (0, 0), icon_gray)  
+        im.paste(stamped, (x - icon_size//2, y - icon_size//2), stamped)
+
 
     k = 0
     for row in range(2):
