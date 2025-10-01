@@ -57,90 +57,66 @@ except Exception:
     _coffee_src = None  # no icon available; still renders fine
 
 def render_stamp_card(visits: int) -> BytesIO:
-    """Render the loyalty stamp card as a PNG and return an in-memory buffer."""
     visits = max(0, min(10, int(visits)))
-
-    # Canvas + palette
     W, H = 1080, 1080
     bg, fg, red = (0, 0, 0), (255, 255, 255), (220, 53, 69)
 
     im = Image.new("RGB", (W, H), bg)
     d  = ImageDraw.Draw(im)
 
-    # Fonts
     title_f = _font(120, bold=True)
-    sub_f   = _font(50,  bold=True)
-    foot_f  = _font(40,  bold=True)
-    logo_f  = _font(40,  bold=True)
+    sub_f   = _font(50, bold=True)
+    foot_f  = _font(40, bold=True)
+    logo_f  = _font(40, bold=True)
 
-    # --- header: COFFEE SHOP ---
-    title_box = d.textbbox((0, 0), "COFFEE SHOP", font=title_f)
-    title_w   = title_box[2] - title_box[0]
-    d.text(((W - title_w)//2, 56), "COFFEE SHOP", font=title_f, fill=fg)
+    # Title
+    w_title, _ = d.textbbox((0, 0), "COFFEE SHOP", font=title_f)[2:]
+    d.text(((W - w_title)//2, 56), "COFFEE SHOP", font=title_f, fill=fg)
 
-    # --- logo placeholder (restored concentric rings) ---
-    logo_center = (W // 2, 330)
-    logo_radii = [80, 100]
-    for r in logo_radii:
-        d.ellipse(
-            [logo_center[0]-r, logo_center[1]-r, logo_center[0]+r, logo_center[1]+r],
-            outline=fg, width=6
-        )
-    d.text((W//2 - 40, 330), "LOGO", font=logo_f, fill=fg)
+    # Concentric circles for logo
+    logo_center = (W // 2, 300)
+    d.ellipse([logo_center[0]-90, logo_center[1]-90, logo_center[0]+90, logo_center[1]+90], outline=fg, width=6)
+    d.ellipse([logo_center[0]-70, logo_center[1]-70, logo_center[0]+70, logo_center[1]+70], outline=fg, width=6)
 
-    # --- thank-you line (stays above the stamps) ---
-    sub_text = "THANK YOU FOR VISITING TODAY!"
-    sub_box = d.textbbox((0, 0), sub_text, font=sub_f)
-    sub_w   = sub_box[2] - sub_box[0]
-    d.text(((W - sub_w)//2, 568), sub_text, font=sub_f, fill=fg)
+    # FIX: Center the word "LOGO" inside the circles
+    logo_text = "LOGO"
+    w_logo, h_logo = d.textbbox((0, 0), logo_text, font=logo_f)[2:]
+    d.text((logo_center[0] - w_logo//2, logo_center[1] - h_logo//2),
+           logo_text, font=logo_f, fill=fg)
 
-    # --- stamp grid (lowered so it doesn't overlap the text) ---
-    CIRCLE_R, ROW_GAP, COL_GAP, GRID_TOP = 72, 180, 180, 720  # <- lowered from 600
+    # Thank you text
+    w_thanks, _ = d.textbbox((0, 0), "THANK YOU FOR VISITING TODAY!", font=sub_f)[2:]
+    d.text(((W - w_thanks)//2, 500), "THANK YOU FOR VISITING TODAY!", font=sub_f, fill=fg)
+
+    # Stamp grid
+    CIRCLE_R, ROW_GAP, COL_GAP, GRID_TOP = 72, 180, 180, 600
     left_x = (W - 4 * COL_GAP) // 2
+    def circle_bbox(x, y): return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
 
-    def circle_bbox(x, y):
-        return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
-
-    # prepare icon stamp (optional)
-    icon_img = None
-    if _coffee_src is not None:
-        target = int(CIRCLE_R * 1.15)
-        icon_gray = _coffee_src.resize((target, target), Image.LANCZOS)
-        red_rgba  = Image.new("RGBA", icon_gray.size, red + (255,))
-        alpha     = ImageOps.invert(icon_gray)  # light -> transparent
-        stamped   = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-        stamped.paste(red_rgba, (0, 0), alpha)
-        icon_img  = stamped
-
-    def draw_empty(x, y):
-        d.ellipse(circle_bbox(x, y), outline=fg, width=6)
-
-    def draw_stamp(x, y):
-        d.ellipse(circle_bbox(x, y), outline=red, width=10)
-        d.ellipse(circle_bbox(x, y), outline=red, width=3)
-        if icon_img:
-            ix, iy = icon_img.size
-            im.paste(icon_img, (x - ix//2, y - iy//2), icon_img)
+    def draw_empty(x,y): d.ellipse(circle_bbox(x,y), outline=fg, width=6)
+    def draw_stamp(x,y):
+        d.ellipse(circle_bbox(x,y), outline=red, width=10)
+        if _coffee_src:
+            icon_gray = _coffee_src.resize((int(CIRCLE_R*1.5), int(CIRCLE_R*1.5)), Image.LANCZOS)
+            im.paste(icon_gray, (x-int(CIRCLE_R*0.75), y-int(CIRCLE_R*0.75)), icon_gray)
 
     k = 0
     for row in range(2):
-        y = GRID_TOP + row * ROW_GAP
+        y = GRID_TOP + row*ROW_GAP
         for col in range(5):
-            x = left_x + col * COL_GAP
+            x = left_x + col*COL_GAP
             (draw_stamp if k < visits else draw_empty)(x, y)
             k += 1
 
-    # --- footer ---
-    foot_text = "10 STAMPS = 1 FREE COFFEE"
-    foot_box  = d.textbbox((0, 0), foot_text, font=foot_f)
-    foot_w    = foot_box[2] - foot_box[0]
-    d.text(((W - foot_w)//2, H - 74), foot_text, font=foot_f, fill=fg)
+    # Footer
+    w_foot, _ = d.textbbox((0, 0), "10 STAMPS = 1 FREE COFFEE", font=foot_f)[2:]
+    d.text(((W - w_foot)//2, H - 74), "10 STAMPS = 1 FREE COFFEE", font=foot_f, fill=fg)
 
-    # Return PNG buffer
     buf = BytesIO()
     im.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
 
 # ------------------------------------------------------------------------------
 # ========================== END: IMAGE RENDERING BLOCK ==========================
