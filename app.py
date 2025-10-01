@@ -122,17 +122,29 @@ def render_stamp_card(visits: int) -> BytesIO:
     def draw_empty(cx, cy):
         d.ellipse(circle_bbox(cx, cy), outline=FG, width=6)
 
-    def draw_stamp(cx, cy):
-        # solid red disk + red outline
-        d.ellipse(circle_bbox(cx, cy), fill=RED, outline=RED, width=6)
-        # optional white coffee overlay from grayscale icon
-        if _coffee_src is not None:
-            icon_size = int(CIRCLE_R * 1.2)  # tweak 1.0–1.4 to taste
-            icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
-            white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
-            white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-            white_icon.paste(white_rgba, (0, 0), icon_gray)  # icon_gray as alpha
-            im.paste(white_icon, (cx - icon_size//2, cy - icon_size//2), white_icon)
+def draw_stamp(cx, cy):
+    # 1) draw a solid red disk on a tiny RGBA layer, then composite onto base
+    stamp_size = CIRCLE_R * 2
+    stamp = Image.new("RGBA", (stamp_size, stamp_size), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(stamp)
+    sd.ellipse([0, 0, stamp_size-1, stamp_size-1], fill=(220, 53, 69, 255))  # solid RED
+
+    # paste the filled disk centered at (cx, cy)
+    im.paste(stamp, (cx - CIRCLE_R, cy - CIRCLE_R), stamp)
+
+    # 2) draw a crisp red outline on top (on the main canvas)
+    d.ellipse(circle_bbox(cx, cy), outline=(220, 53, 69), width=6)
+
+    # 3) optional white coffee overlay derived from grayscale icon (white on red)
+    if _coffee_src is not None:
+        icon_size = int(CIRCLE_R * 1.2)  # tweak 1.0–1.4 to taste
+        icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
+        white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
+        white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
+        # Use icon_gray as alpha to cut the white overlay
+        white_icon.paste(white_rgba, (0, 0), icon_gray)
+        im.paste(white_icon, (cx - icon_size//2, cy - icon_size//2), white_icon)
+
 
     k = 0
     for row in range(2):
