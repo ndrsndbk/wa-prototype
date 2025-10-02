@@ -58,113 +58,121 @@ except Exception:
     _coffee_src = None  # stamps will be solid red with no icon overlay
 
 def render_stamp_card(visits: int) -> BytesIO:
-    """Render the loyalty stamp card as a PNG and return an in-memory buffer."""
-    visits = max(0, min(10, int(visits)))
+    """
+    Render the loyalty stamp card as a PNG and return an in-memory buffer.
+    This function is exception-safe: it always returns a valid PNG.
+    """
+    try:
+        visits = max(0, min(10, int(visits)))
 
-    # Canvas + palette
-    W, H = 1080, 1080
-    BG, FG, RED = (0, 0, 0), (255, 255, 255), (220, 53, 69)
-    PADDING_X = 56
-    GAP_AFTER_TITLE = 40
-    GAP_AFTER_LOGO  = 40
-    GAP_AFTER_THANK = 60
-    FOOTER_GAP_BOTTOM = 74
+        # Canvas + palette
+        W, H = 1080, 1080
+        BG, FG, RED = (0, 0, 0), (255, 255, 255), (220, 53, 69)
+        GAP_AFTER_TITLE = 40
+        GAP_AFTER_LOGO  = 40
+        GAP_AFTER_THANK = 60
+        FOOTER_GAP_BOTTOM = 74
 
-    im = Image.new("RGB", (W, H), BG)
-    d  = ImageDraw.Draw(im)
+        im = Image.new("RGB", (W, H), BG)
+        d  = ImageDraw.Draw(im)
 
-    # Fonts
-    title_f = _font(120, bold=True)
-    sub_f   = _font(50,  bold=True)
-    foot_f  = _font(40,  bold=True)
-    logo_f  = _font(40,  bold=True)
+        # Fonts
+        title_f = _font(120, bold=True)
+        sub_f   = _font(50,  bold=True)
+        foot_f  = _font(40,  bold=True)
+        logo_f  = _font(40,  bold=True)
 
-    # ---------- Title ----------
-    title_text = "COFFEE SHOP"
-    tbox = d.textbbox((0, 0), title_text, font=title_f)  # (l, t, r, b)
-    t_w, t_h = tbox[2] - tbox[0], tbox[3] - tbox[1]
-    y = 56
-    d.text(((W - t_w)//2, y), title_text, font=title_f, fill=FG)
-    y += t_h + GAP_AFTER_TITLE
+        # ---------- Title ----------
+        title_text = "COFFEE SHOP"
+        tbox = d.textbbox((0, 0), title_text, font=title_f)  # (l, t, r, b)
+        t_w, t_h = tbox[2] - tbox[0], tbox[3] - tbox[1]
+        y = 56
+        d.text(((W - t_w)//2, y), title_text, font=title_f, fill=FG)
+        y += t_h + GAP_AFTER_TITLE
 
-    # ---------- Logo (concentric rings + centered "LOGO") ----------
-    logo_outer_r, logo_inner_r = 100, 80
-    logo_center = (W // 2, y + logo_outer_r)  # ring sits below the title
-    # two rings
-    for r in (logo_outer_r, logo_inner_r):
-        d.ellipse(
-            [logo_center[0]-r, logo_center[1]-r, logo_center[0]+r, logo_center[1]+r],
-            outline=FG, width=6
-        )
-    # centered "LOGO"
-    logo_text = "LOGO"
-    lbox = d.textbbox((0, 0), logo_text, font=logo_f)
-    lw, lh = lbox[2] - lbox[0], lbox[3] - lbox[1]
-    d.text((logo_center[0] - lw//2, logo_center[1] - lh//2), logo_text, font=logo_f, fill=FG)
-    # advance y to just below the outer ring
-    y = logo_center[1] + logo_outer_r + GAP_AFTER_LOGO
+        # ---------- Logo (concentric rings + centered "LOGO") ----------
+        logo_outer_r, logo_inner_r = 100, 80
+        logo_center = (W // 2, y + logo_outer_r)
+        for r in (logo_outer_r, logo_inner_r):
+            d.ellipse([logo_center[0]-r, logo_center[1]-r,
+                       logo_center[0]+r, logo_center[1]+r],
+                      outline=FG, width=6)
+        logo_text = "LOGO"
+        lbox = d.textbbox((0, 0), logo_text, font=logo_f)
+        lw, lh = lbox[2] - lbox[0], lbox[3] - lbox[1]
+        d.text((logo_center[0] - lw//2, logo_center[1] - lh//2),
+               logo_text, font=logo_f, fill=FG)
+        y = logo_center[1] + logo_outer_r + GAP_AFTER_LOGO
 
-    # ---------- Thank-you line ----------
-    thank_text = "THANK YOU FOR VISITING TODAY!"
-    sbox = d.textbbox((0, 0), thank_text, font=sub_f)
-    sw, sh = sbox[2] - sbox[0], sbox[3] - sbox[1]
-    d.text(((W - sw)//2, y), thank_text, font=sub_f, fill=FG)
-    y += sh + GAP_AFTER_THANK
+        # ---------- Thank-you line ----------
+        thank_text = "THANK YOU FOR VISITING TODAY!"
+        sbox = d.textbbox((0, 0), thank_text, font=sub_f)
+        sw, sh = sbox[2] - sbox[0], sbox[3] - sbox[1]
+        d.text(((W - sw)//2, y), thank_text, font=sub_f, fill=FG)
+        y += sh + GAP_AFTER_THANK
 
-    # ---------- Stamp grid (automatically placed below thank-you) ----------
-    CIRCLE_R, ROW_GAP, COL_GAP = 72, 180, 180
-    GRID_TOP = y                                         # dynamic placement
-    left_x   = (W - 4 * COL_GAP) // 2                    # 5 columns => spans 4 gaps
+        # ---------- Stamp grid (auto-placed under thank-you) ----------
+        CIRCLE_R, ROW_GAP, COL_GAP = 72, 180, 180
+        GRID_TOP = y
+        left_x   = (W - 4 * COL_GAP) // 2
 
-    def circle_bbox(cx, cy):
-        return [cx - CIRCLE_R, cy - CIRCLE_R, cx + CIRCLE_R, cy + CIRCLE_R]
+        def circle_bbox(cx, cy):
+            return [cx - CIRCLE_R, cy - CIRCLE_R, cx + CIRCLE_R, cy + CIRCLE_R]
 
-    def draw_empty(cx, cy):
-        d.ellipse(circle_bbox(cx, cy), outline=FG, width=6)
+        def draw_empty(cx, cy):
+            d.ellipse(circle_bbox(cx, cy), outline=FG, width=6)
 
-def draw_stamp(cx, cy):
-    # 1) draw a solid red disk on a tiny RGBA layer, then composite onto base
-    stamp_size = CIRCLE_R * 2
-    stamp = Image.new("RGBA", (stamp_size, stamp_size), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(stamp)
-    sd.ellipse([0, 0, stamp_size-1, stamp_size-1], fill=(220, 53, 69, 255))  # solid RED
+        def draw_stamp(cx, cy):
+            # Solid red fill via RGBA mini-layer (prevents any fill quirks)
+            stamp_size = CIRCLE_R * 2
+            stamp = Image.new("RGBA", (stamp_size, stamp_size), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(stamp)
+            sd.ellipse([0, 0, stamp_size-1, stamp_size-1], fill=(RED[0], RED[1], RED[2], 255))
+            im.paste(stamp, (cx - CIRCLE_R, cy - CIRCLE_R), stamp)
 
-    # paste the filled disk centered at (cx, cy)
-    im.paste(stamp, (cx - CIRCLE_R, cy - CIRCLE_R), stamp)
+            # Crisp red outline on main canvas
+            d.ellipse(circle_bbox(cx, cy), outline=RED, width=6)
 
-    # 2) draw a crisp red outline on top (on the main canvas)
-    d.ellipse(circle_bbox(cx, cy), outline=(220, 53, 69), width=6)
+            # Optional white coffee overlay from grayscale icon
+            if _coffee_src is not None:
+                icon_size = int(CIRCLE_R * 1.2)
+                icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
+                white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
+                white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
+                white_icon.paste(white_rgba, (0, 0), icon_gray)  # icon as alpha
+                im.paste(white_icon, (cx - icon_size//2, cy - icon_size//2), white_icon)
 
-    # 3) optional white coffee overlay derived from grayscale icon (white on red)
-    if _coffee_src is not None:
-        icon_size = int(CIRCLE_R * 1.2)  # tweak 1.0–1.4 to taste
-        icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
-        white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
-        white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-        # Use icon_gray as alpha to cut the white overlay
-        white_icon.paste(white_rgba, (0, 0), icon_gray)
-        im.paste(white_icon, (cx - icon_size//2, cy - icon_size//2), white_icon)
+        k = 0
+        for row in range(2):
+            cy = GRID_TOP + row * ROW_GAP
+            for col in range(5):
+                cx = left_x + col * COL_GAP
+                (draw_stamp if k < visits else draw_empty)(cx, cy)
+                k += 1
 
+        # ---------- Footer ----------
+        foot_text = "10 STAMPS = 1 FREE COFFEE"
+        fbox = d.textbbox((0, 0), foot_text, font=foot_f)
+        fw = fbox[2] - fbox[0]
+        d.text(((W - fw)//2, H - FOOTER_GAP_BOTTOM), foot_text, font=foot_f, fill=FG)
 
-    k = 0
-    for row in range(2):
-        cy = GRID_TOP + row * ROW_GAP
-        for col in range(5):
-            cx = left_x + col * COL_GAP
-            (draw_stamp if k < visits else draw_empty)(cx, cy)
-            k += 1
+        # Return PNG buffer
+        buf = BytesIO()
+        im.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
 
-    # ---------- Footer ----------
-    foot_text = "10 STAMPS = 1 FREE COFFEE"
-    fbox = d.textbbox((0, 0), foot_text, font=foot_f)
-    fw = fbox[2] - fbox[0]
-    d.text(((W - fw)//2, H - FOOTER_GAP_BOTTOM), foot_text, font=foot_f, fill=FG)
-
-    # Return PNG buffer
-    buf = BytesIO()
-    im.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
+    except Exception as e:
+        # Emergency fallback image so we never return None
+        fallback = Image.new("RGB", (1080, 1080), (30, 30, 30))
+        dd = ImageDraw.Draw(fallback)
+        err_f = _font(48, bold=True)
+        dd.text((40, 40), "Card render error", fill=(255, 120, 120), font=err_f)
+        dd.text((40, 110), str(e)[:600], fill=(220, 220, 220))
+        out = BytesIO()
+        fallback.save(out, format="PNG")
+        out.seek(0)
+        return out
 # ========================== END: IMAGE RENDERING BLOCK ==========================
 
 
