@@ -64,21 +64,25 @@ except Exception:
     _coffee_src = None  # stamps still render without icon
 
 def render_stamp_card(visits: int) -> BytesIO:
-    """
-    Renders the loyalty card with:
-    - Fixed spacing for logo, text, and grid
-    - Solid red fill for stamped circles
-    - Optional white coffee icon overlay
-    """
+    """Render loyalty card with hard anchors so elements never overlap."""
     visits = max(0, min(10, int(visits)))
 
     # Canvas & palette
     W, H = 1080, 1080
     BG, FG, RED = (0, 0, 0), (255, 255, 255), (220, 53, 69)
-    GAP_AFTER_TITLE = 40
-    GAP_AFTER_LOGO  = 40
-    GAP_AFTER_THANK = 60
-    FOOTER_GAP_BOTTOM = 74
+
+    # ---- Fixed anchors (robust across hosts) ----
+    TITLE_Y         = 56
+    LOGO_CENTER_Y   = 300           # concentric rings center
+    THANK_Y_TARGET  = 520           # desired thank-you baseline
+    GRID_TOP_FIXED  = 700           # absolute minimum top for stamp grid
+    GRID_GAP_BELOW_THANK = 140      # extra margin from thank-you to grid
+    FOOTER_Y        = H - 74
+
+    # Stamp geometry
+    CIRCLE_R = 72
+    ROW_GAP  = 180
+    COL_GAP  = 180
 
     im = Image.new("RGB", (W, H), BG)
     d  = ImageDraw.Draw(im)
@@ -90,74 +94,68 @@ def render_stamp_card(visits: int) -> BytesIO:
     logo_f  = _font(40,  bold=True)
 
     # Title
-    title_text = "COFFEE SHOP"
-    tbox = d.textbbox((0, 0), title_text, font=title_f)
-    t_w, t_h = tbox[2]-tbox[0], tbox[3]-tbox[1]
-    y = 56
-    d.text(((W - t_w)//2, y), title_text, font=title_f, fill=FG)
-    y += t_h + GAP_AFTER_TITLE
+    title = "COFFEE SHOP"
+    tw = d.textbbox((0, 0), title, font=title_f)[2]
+    d.text(((W - tw)//2, TITLE_Y), title, font=title_f, fill=FG)
 
     # Concentric logo + centered "LOGO"
     logo_outer_r, logo_inner_r = 100, 80
-    logo_center = (W // 2, y + logo_outer_r)
+    cx, cy = W // 2, LOGO_CENTER_Y
     for r in (logo_outer_r, logo_inner_r):
-        d.ellipse([logo_center[0]-r, logo_center[1]-r,
-                   logo_center[0]+r, logo_center[1]+r],
-                  outline=FG, width=6)
-    logo_text = "LOGO"
-    lbox = d.textbbox((0, 0), logo_text, font=logo_f)
-    lw, lh = lbox[2]-lbox[0], lbox[3]-lbox[1]
-    d.text((logo_center[0]-lw//2, logo_center[1]-lh//2), logo_text, font=logo_f, fill=FG)
-    y = logo_center[1] + logo_outer_r + GAP_AFTER_LOGO
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=FG, width=6)
+    lbox = d.textbbox((0, 0), "LOGO", font=logo_f)
+    d.text((cx - (lbox[2]-lbox[0])//2, cy - (lbox[3]-lbox[1])//2), "LOGO", font=logo_f, fill=FG)
 
-    # Thank-you text
-    thank_text = "THANK YOU FOR VISITING TODAY!"
-    sbox = d.textbbox((0, 0), thank_text, font=sub_f)
-    sw, sh = sbox[2]-sbox[0], sbox[3]-sbox[1]
-    d.text(((W - sw)//2, y), thank_text, font=sub_f, fill=FG)
-    y += sh + GAP_AFTER_THANK
+    # Thank-you line (stay below logo by at least 40 px)
+    thank = "THANK YOU FOR VISITING TODAY!"
+    sw = d.textbbox((0, 0), thank, font=sub_f)[2]
+    THANK_Y = max(THANK_Y_TARGET, LOGO_CENTER_Y + logo_outer_r + 40)
+    d.text(((W - sw)//2, THANK_Y), thank, font=sub_f, fill=FG)
 
-    # Grid
-    CIRCLE_R, ROW_GAP, COL_GAP = 72, 180, 180
-    GRID_TOP = y
+    # Stamp grid (force far enough below thank-you)
+    GRID_TOP = max(GRID_TOP_FIXED, THANK_Y + GRID_GAP_BELOW_THANK)
     left_x   = (W - 4 * COL_GAP) // 2
 
-    def circle_bbox(cx, cy):
-        return [cx - CIRCLE_R, cy - CIRCLE_R, cx + CIRCLE_R, cy + CIRCLE_R]
+    def circle_bbox(x, y):
+        return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
 
-    def draw_empty(cx, cy):
-        d.ellipse(circle_bbox(cx, cy), outline=FG, width=6)
+    # Optional white coffee overlay source
+    icon_src = None
+    if '_coffee_src' in globals() and _coffee_src is not None:
+        icon_src = _coffee_src
 
-    def draw_stamp(cx, cy):
-        # Solid red fill
-        d.ellipse(circle_bbox(cx, cy), fill=RED, outline=RED, width=6)
-        # Optional white coffee overlay
-        if _coffee_src is not None:
+    def draw_empty(x, y):
+        d.ellipse(circle_bbox(x, y), outline=FG, width=6)
+
+    def draw_stamp(x, y):
+        # solid red fill
+        d.ellipse(circle_bbox(x, y), fill=RED, outline=RED, width=6)
+        # white coffee overlay (if available)
+        if icon_src is not None:
             icon_size = int(CIRCLE_R * 1.2)
-            icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
+            icon_gray = icon_src.resize((icon_size, icon_size), Image.LANCZOS)
             white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
             white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-            white_icon.paste(white_rgba, (0, 0), icon_gray)
-            im.paste(white_icon, (cx - icon_size//2, cy - icon_size//2), white_icon)
+            white_icon.paste(white_rgba, (0, 0), icon_gray)  # gray as alpha
+            im.paste(white_icon, (x - icon_size//2, y - icon_size//2), white_icon)
 
     k = 0
     for row in range(2):
-        cy = GRID_TOP + row * ROW_GAP
+        y = GRID_TOP + row * ROW_GAP
         for col in range(5):
-            cx = left_x + col * COL_GAP
-            (draw_stamp if k < visits else draw_empty)(cx, cy)
+            x = left_x + col * COL_GAP
+            (draw_stamp if k < visits else draw_empty)(x, y)
             k += 1
 
     # Footer
-    foot_text = "10 STAMPS = 1 FREE COFFEE"
-    fbox = d.textbbox((0, 0), foot_text, font=foot_f)
-    fw = fbox[2]-fbox[0]
-    d.text(((W - fw)//2, H - FOOTER_GAP_BOTTOM), foot_text, font=foot_f, fill=FG)
+    foot = "10 STAMPS = 1 FREE COFFEE"
+    fw = d.textbbox((0, 0), foot, font=foot_f)[2]
+    d.text(((W - fw)//2, FOOTER_Y), foot, font=foot_f, fill=FG)
 
-    buf = BytesIO()
-    im.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
+    out = BytesIO()
+    im.save(out, format="PNG")
+    out.seek(0)
+    return out
 
 
 # ───────────────────────────
