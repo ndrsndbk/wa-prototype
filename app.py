@@ -1,9 +1,10 @@
 """
 Flask app for WhatsApp Cloud API loyalty card prototype.
 - Uses supabase-py (HTTP) instead of psycopg2 (TCP)
-- Image fixes: concentric logo rings, centered "LOGO", lowered grid
+- Image fixes: concentric logo rings, centered "LOGO", dynamic layout
 - Stamped circles: solid red + white coffee icon overlay
-- New "REPORT" trigger for weekly owner summary
+- REPORT trigger for weekly owner summary
+- PROFILE flow: asks 3 questions and stores responses without WhatsApp Flows
 """
 import os
 import datetime
@@ -11,7 +12,7 @@ from io import BytesIO
 
 from flask import Flask, request, send_file, redirect, url_for
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, Image
 from supabase import create_client
 
 app = Flask(__name__)
@@ -35,16 +36,19 @@ try:
 except Exception:
     pass
 
-# ========================= BEGIN: IMAGE RENDERING BLOCK =========================
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+# Import QA helpers (3-question profile flow)
+from qa_handler import start_profile_flow, handle_profile_answer
 
+# ------------------------------------------------------------------------------
+# ========================= BEGIN: IMAGE RENDERING BLOCK =========================
+# ------------------------------------------------------------------------------
 def _font(size: int, bold: bool = False):
-    """Try DejaVu; fall back to default."""
+    """Try DejaVu (present on most Linux images); fall back to default."""
     try:
         path = (
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            if bold
+            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
         )
         return ImageFont.truetype(path, size=size)
     except Exception:
@@ -58,8 +62,7 @@ except Exception:
     _coffee_src = None  # stamps will be solid red with no icon overlay
 
 def render_stamp_card(visits: int) -> BytesIO:
-    """
-    Render the loyalty stamp card as a PNG and return an in-memory buffer.
+    """Render the loyalty stamp card as a PNG and return an in-memory buffer.
     This function is exception-safe: it always returns a valid PNG.
     """
     try:
@@ -123,14 +126,14 @@ def render_stamp_card(visits: int) -> BytesIO:
             d.ellipse(circle_bbox(cx, cy), outline=FG, width=6)
 
         def draw_stamp(cx, cy):
-            # Solid red fill via RGBA mini-layer (prevents any fill quirks)
+            # Solid red fill via RGBA mini-layer
             stamp_size = CIRCLE_R * 2
             stamp = Image.new("RGBA", (stamp_size, stamp_size), (0, 0, 0, 0))
             sd = ImageDraw.Draw(stamp)
             sd.ellipse([0, 0, stamp_size-1, stamp_size-1], fill=(RED[0], RED[1], RED[2], 255))
             im.paste(stamp, (cx - CIRCLE_R, cy - CIRCLE_R), stamp)
 
-            # Crisp red outline on main canvas
+            # Crisp red outline
             d.ellipse(circle_bbox(cx, cy), outline=RED, width=6)
 
             # Optional white coffee overlay from grayscale icon
@@ -164,9 +167,13 @@ def render_stamp_card(visits: int) -> BytesIO:
 
     except Exception as e:
         # Emergency fallback image so we never return None
-        fallback = Image.new("RGB", (1080, 1080), (30, 30, 30))
-        dd = ImageDraw.Draw(fallback)
-        err_f = _font(48, bold=True)
+        from PIL import Image as PILImage, ImageDraw as PILDraw
+        fallback = PILImage.new("RGB", (1080, 1080), (30, 30, 30))
+        dd = PILDraw.Draw(fallback)
+        try:
+            err_f = _font(48, bold=True)
+        except Exception:
+            err_f = None
         dd.text((40, 40), "Card render error", fill=(255, 120, 120), font=err_f)
         dd.text((40, 110), str(e)[:600], fill=(220, 220, 220))
         out = BytesIO()
@@ -174,13 +181,12 @@ def render_stamp_card(visits: int) -> BytesIO:
         out.seek(0)
         return out
 # ========================== END: IMAGE RENDERING BLOCK ==========================
-
+# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # WhatsApp helpers
 # ------------------------------------------------------------------------------
 def build_card_url(visits: int) -> str:
-    """Public URL used in WhatsApp image messages."""
     base = (HOST_URL or request.url_root).rstrip("/")
     return f"{base}/card/{int(visits)}.png"
 
@@ -207,8 +213,12 @@ def send_image(to: str, link: str) -> None:
         print("send_image error:", e)
 
 # ------------------------------------------------------------------------------
-# Webhook
+# Routes
 # ------------------------------------------------------------------------------
+@app.route("/", methods=["GET"])
+def health():
+    return "OK", 200
+
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
     mode = request.args.get("hub.mode")
@@ -230,16 +240,21 @@ def handle_webhook():
             return "ignored", 200
 
         from_number = message.get("from")
-        text = ((message.get("text") or {}).get("body") or "").strip().upper()
+        text = ((message.get("text") or {}).get("body") or "").strip()
 
-        # --- simple test image ---
-        if text == "TEST":
+        token = text.strip().upper()
+
+        # PROFILE flow
+        if token == "PROFILE":
+            start_profile_flow(sb, from_number, send_text)
+            return "ok", 200
+
+        if token == "TEST":
             send_image(from_number, build_card_url(0))
             send_text(from_number, "👋 Thanks for testing! Here's your demo loyalty card.")
             return "ok", 200
 
-        # --- record a sale/visit ---
-        if text == "SALE":
+        if token == "SALE":
             row = (
                 sb.table("customers")
                   .select("number_of_visits")
@@ -264,13 +279,10 @@ def handle_webhook():
                 send_text(from_number, f"Thanks for your visit! You now have {visits} stamp(s).")
             return "ok", 200
 
-        # --- REPORT trigger for owner ---
-        if text == "REPORT":
-            # 1) Total customers (all rows)
+        if token == "REPORT":
             all_rows = sb.table("customers").select("customer_id").execute().data or []
             total_customers = len(all_rows)
 
-            # 2) Active in last 7 days
             seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
             active_rows = (
                 sb.table("customers")
@@ -280,8 +292,6 @@ def handle_webhook():
                   .data or []
             )
             active_count = len(active_rows)
-
-            # 3) Growth vs total (%)
             growth_pct = (active_count / total_customers * 100) if total_customers > 0 else 0.0
 
             report_text = (
@@ -294,30 +304,27 @@ def handle_webhook():
             send_text(from_number, report_text)
             return "ok", 200
 
+        # Treat as profile answer if flow is active
+        handled = handle_profile_answer(sb, from_number, text, send_text)
+        if handled:
+            return "ok", 200
+
     except Exception as exc:
         print("Webhook error:", exc)
 
     return "ok", 200
 
-# ------------------------------------------------------------------------------
-# =========================== BEGIN: IMAGE DELIVERY BLOCK ==========================
-# ------------------------------------------------------------------------------
 @app.route("/card/<int:visits>.png")
 def card_png(visits: int):
-    """Serve the rendered PNG over HTTP."""
     return send_file(render_stamp_card(visits), mimetype="image/png", max_age=300)
 
 @app.route("/card")
 def card_query():
-    """Convenience endpoint: /card?n=5 -> redirects to /card/5.png"""
     try:
         n = int(request.args.get("n", 0))
     except ValueError:
         n = 0
     return redirect(url_for("card_png", visits=max(0, min(10, n))), code=302)
-# ------------------------------------------------------------------------------
-# ============================ END: IMAGE DELIVERY BLOCK ==========================
-# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))
