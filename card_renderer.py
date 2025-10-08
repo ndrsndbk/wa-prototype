@@ -69,49 +69,52 @@ def render_stamp_card(visits: int) -> BytesIO:
     tbox = d.textbbox((0, 0), title, font=title_f)
     d.text(((W - (tbox[2]-tbox[0]))//2, TITLE_Y), title, font=title_f, fill=FG)
 
-    # Concentric logo + centered "LOGO"
+    # Logo
     logo_outer_r, logo_inner_r = 100, 80
     cx, cy = W // 2, LOGO_CENTER_Y
     for r in (logo_outer_r, logo_inner_r):
         d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=FG, width=6)
-
     lbox = d.textbbox((0, 0), "LOGO", font=logo_f)
     d.text((cx - (lbox[2]-lbox[0])//2, cy - (lbox[3]-lbox[1])//2), "LOGO", font=logo_f, fill=FG)
 
-    # Thank-you (ensure it sits below logo by at least 40px)
+    # Thank-you
     thank = "THANK YOU FOR VISITING TODAY!"
     sbox = d.textbbox((0, 0), thank, font=sub_f)
     thank_w, thank_h = sbox[2]-sbox[0], sbox[3]-sbox[1]
-    thank_y = max(THANK_Y_TARGET, LOGO_CENTER_Y + logo_outer_r + 40)  # top of text
+    thank_y = max(THANK_Y_TARGET, LOGO_CENTER_Y + logo_outer_r + 40)
     d.text(((W - thank_w)//2, thank_y), thank, font=sub_f, fill=FG)
     thank_bottom = thank_y + thank_h
 
-    # First row center so circle TOP >= thank_bottom + margin
+    # --- Grid vertical placement guards ---
+    # Top guard: keep first row's TOP below thank-you by MIN_GAP_BELOW_THANK
     min_center_from_text = thank_bottom + MIN_GAP_BELOW_THANK + CIRCLE_R
     grid_top_center = max(GRID_TOP_FIXED_MIN, min_center_from_text)
 
+    # Bottom guard: keep second row away from the footer by FOOTER_MARGIN_TOP
+    FOOTER_MARGIN_TOP = 120  # adjust to taste (smaller number = closer to footer)
+    max_top_center_allowed = FOOTER_Y - FOOTER_MARGIN_TOP - CIRCLE_R - ROW_GAP
+    grid_top_center = min(grid_top_center, max_top_center_allowed)
+
+    # Horizontal placement
     def circle_bbox(cx, cy):
         return [cx - CIRCLE_R, cy - CIRCLE_R, cx + CIRCLE_R, cy + CIRCLE_R]
 
-    # Optional white coffee overlay
     icon_src = _coffee_src
 
     def draw_empty(x, y):
         d.ellipse(circle_bbox(x, y), outline=FG, width=6)
 
     def draw_stamp(x, y):
-        # Solid red fill + outline
         d.ellipse(circle_bbox(x, y), fill=RED, outline=RED, width=6)
-        # White coffee overlay (only if icon is present)
         if icon_src is not None:
             icon_size = int(CIRCLE_R * 1.2)
             icon_gray = icon_src.resize((icon_size, icon_size), Image.LANCZOS)
             white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
             white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-            white_icon.paste(white_rgba, (0, 0), icon_gray)  # gray acts as alpha
+            white_icon.paste(white_rgba, (0, 0), icon_gray)
             im.paste(white_icon, (x - icon_size//2, y - icon_size//2), white_icon)
 
-    # Draw 2 rows × 5 cols
+    # Draw 2 x 5
     k = 0
     for row in range(2):
         y = grid_top_center + row * ROW_GAP
@@ -129,3 +132,4 @@ def render_stamp_card(visits: int) -> BytesIO:
     im.save(out, format="PNG")
     out.seek(0)
     return out
+
