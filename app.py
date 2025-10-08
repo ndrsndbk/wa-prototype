@@ -64,6 +64,12 @@ except Exception:
     _coffee_src = None  # stamps still render without icon
 
 def render_stamp_card(visits: int) -> BytesIO:
+    """
+    Renders the loyalty card with:
+    - Fixed spacing for logo, text, and grid
+    - Solid red fill for stamped circles
+    - Optional white coffee icon overlay
+    """
     visits = max(0, min(10, int(visits)))
 
     # Canvas & palette
@@ -104,14 +110,14 @@ def render_stamp_card(visits: int) -> BytesIO:
     d.text((logo_center[0]-lw//2, logo_center[1]-lh//2), logo_text, font=logo_f, fill=FG)
     y = logo_center[1] + logo_outer_r + GAP_AFTER_LOGO
 
-    # Thank-you
+    # Thank-you text
     thank_text = "THANK YOU FOR VISITING TODAY!"
     sbox = d.textbbox((0, 0), thank_text, font=sub_f)
     sw, sh = sbox[2]-sbox[0], sbox[3]-sbox[1]
     d.text(((W - sw)//2, y), thank_text, font=sub_f, fill=FG)
     y += sh + GAP_AFTER_THANK
 
-    # Stamp grid
+    # Grid
     CIRCLE_R, ROW_GAP, COL_GAP = 72, 180, 180
     GRID_TOP = y
     left_x   = (W - 4 * COL_GAP) // 2
@@ -131,7 +137,7 @@ def render_stamp_card(visits: int) -> BytesIO:
             icon_gray = _coffee_src.resize((icon_size, icon_size), Image.LANCZOS)
             white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
             white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-            white_icon.paste(white_rgba, (0, 0), icon_gray)  # gray acts as alpha
+            white_icon.paste(white_rgba, (0, 0), icon_gray)
             im.paste(white_icon, (cx - icon_size//2, cy - icon_size//2), white_icon)
 
     k = 0
@@ -152,6 +158,7 @@ def render_stamp_card(visits: int) -> BytesIO:
     im.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
 
 # ───────────────────────────
 # WhatsApp helpers
