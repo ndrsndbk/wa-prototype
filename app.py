@@ -64,25 +64,26 @@ except Exception:
     _coffee_src = None  # stamps still render without icon
 
 def render_stamp_card(visits: int) -> BytesIO:
-    """Render loyalty card with hard anchors so elements never overlap."""
+    """Render loyalty card with geometry that prevents any overlap."""
     visits = max(0, min(10, int(visits)))
 
     # Canvas & palette
     W, H = 1080, 1080
     BG, FG, RED = (0, 0, 0), (255, 255, 255), (220, 53, 69)
 
-    # ---- Fixed anchors (robust across hosts) ----
+    # Anchors
     TITLE_Y         = 56
-    LOGO_CENTER_Y   = 300           # concentric rings center
-    THANK_Y_TARGET  = 520           # desired thank-you baseline
-    GRID_TOP_FIXED  = 700           # absolute minimum top for stamp grid
-    GRID_GAP_BELOW_THANK = 140      # extra margin from thank-you to grid
+    LOGO_CENTER_Y   = 300
+    THANK_Y_TARGET  = 520          # desired top of thank-you text
     FOOTER_Y        = H - 74
 
-    # Stamp geometry
-    CIRCLE_R = 72
-    ROW_GAP  = 180
+    # Grid geometry
+    CIRCLE_R = 72                   # circle radius
+    ROW_GAP  = 180                  # center-to-center row spacing
     COL_GAP  = 180
+    LEFT_X   = (W - 4 * COL_GAP) // 2
+    MIN_GAP_BELOW_THANK = 80        # empty pixels between thank-you bottom and TOP of first circles
+    GRID_TOP_FIXED_MIN  = 720       # also never let centers be above this
 
     im = Image.new("RGB", (W, H), BG)
     d  = ImageDraw.Draw(im)
@@ -95,10 +96,10 @@ def render_stamp_card(visits: int) -> BytesIO:
 
     # Title
     title = "COFFEE SHOP"
-    tw = d.textbbox((0, 0), title, font=title_f)[2]
+    tw, th = d.textbbox((0, 0), title, font=title_f)[2:]
     d.text(((W - tw)//2, TITLE_Y), title, font=title_f, fill=FG)
 
-    # Concentric logo + centered "LOGO"
+    # Concentric logo + centered LOGO
     logo_outer_r, logo_inner_r = 100, 80
     cx, cy = W // 2, LOGO_CENTER_Y
     for r in (logo_outer_r, logo_inner_r):
@@ -106,44 +107,43 @@ def render_stamp_card(visits: int) -> BytesIO:
     lbox = d.textbbox((0, 0), "LOGO", font=logo_f)
     d.text((cx - (lbox[2]-lbox[0])//2, cy - (lbox[3]-lbox[1])//2), "LOGO", font=logo_f, fill=FG)
 
-    # Thank-you line (stay below logo by at least 40 px)
+    # Thank-you (ensure it's below the logo)
     thank = "THANK YOU FOR VISITING TODAY!"
-    sw = d.textbbox((0, 0), thank, font=sub_f)[2]
-    THANK_Y = max(THANK_Y_TARGET, LOGO_CENTER_Y + logo_outer_r + 40)
+    sw, sh = d.textbbox((0, 0), thank, font=sub_f)[2:]
+    THANK_Y = max(THANK_Y_TARGET, LOGO_CENTER_Y + logo_outer_r + 40)  # top of text
     d.text(((W - sw)//2, THANK_Y), thank, font=sub_f, fill=FG)
+    thank_bottom = THANK_Y + sh
 
-    # Stamp grid (force far enough below thank-you)
-    GRID_TOP = max(GRID_TOP_FIXED, THANK_Y + GRID_GAP_BELOW_THANK)
-    left_x   = (W - 4 * COL_GAP) // 2
+    # Compute the first row center Y so that the circle TOP is far enough below the text
+    # circle_top = GRID_TOP_CENTER - CIRCLE_R  >=  thank_bottom + MIN_GAP_BELOW_THANK
+    min_grid_center_from_text = thank_bottom + MIN_GAP_BELOW_THANK + CIRCLE_R
+    GRID_TOP_CENTER = max(GRID_TOP_FIXED_MIN, min_grid_center_from_text)
 
-    def circle_bbox(x, y):
-        return [x - CIRCLE_R, y - CIRCLE_R, x + CIRCLE_R, y + CIRCLE_R]
+    def circle_bbox(cx, cy):
+        return [cx - CIRCLE_R, cy - CIRCLE_R, cx + CIRCLE_R, cy + CIRCLE_R]
 
-    # Optional white coffee overlay source
-    icon_src = None
-    if '_coffee_src' in globals() and _coffee_src is not None:
-        icon_src = _coffee_src
+    # Optional white coffee overlay
+    icon_src = _coffee_src if '_coffee_src' in globals() else None
 
     def draw_empty(x, y):
         d.ellipse(circle_bbox(x, y), outline=FG, width=6)
 
     def draw_stamp(x, y):
-        # solid red fill
         d.ellipse(circle_bbox(x, y), fill=RED, outline=RED, width=6)
-        # white coffee overlay (if available)
         if icon_src is not None:
             icon_size = int(CIRCLE_R * 1.2)
             icon_gray = icon_src.resize((icon_size, icon_size), Image.LANCZOS)
             white_rgba = Image.new("RGBA", icon_gray.size, (255, 255, 255, 255))
             white_icon = Image.new("RGBA", icon_gray.size, (0, 0, 0, 0))
-            white_icon.paste(white_rgba, (0, 0), icon_gray)  # gray as alpha
+            white_icon.paste(white_rgba, (0, 0), icon_gray)
             im.paste(white_icon, (x - icon_size//2, y - icon_size//2), white_icon)
 
+    # Draw 2 rows × 5 cols
     k = 0
     for row in range(2):
-        y = GRID_TOP + row * ROW_GAP
+        y = GRID_TOP_CENTER + row * ROW_GAP
         for col in range(5):
-            x = left_x + col * COL_GAP
+            x = LEFT_X + col * COL_GAP
             (draw_stamp if k < visits else draw_empty)(x, y)
             k += 1
 
