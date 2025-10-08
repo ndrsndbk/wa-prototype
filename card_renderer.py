@@ -23,8 +23,8 @@ COL_GAP  = 180
 LEFT_X   = (W - 4 * COL_GAP) // 2
 
 # Spacing protections
-MIN_GAP_BELOW_THANK = 100        # gap between thank-you bottom and TOP of first circles
-GRID_TOP_FIXED_MIN  = 740        # never let the first row center be above this
+MIN_GAP_BELOW_THANK = 80        # gap between thank-you bottom and TOP of first circles
+GRID_TOP_FIXED_MIN  = 800        # never let the first row center be above this
 
 # Colors
 BG  = (0, 0, 0)
