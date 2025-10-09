@@ -5,3 +5,4 @@ psycopg2-binary
 Pillow
 gunicorn
 supabase==2.5.0
+cairosvg==2.7.1
