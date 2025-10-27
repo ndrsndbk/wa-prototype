@@ -246,17 +246,17 @@ def handle_webhook():
             return "ok", 200
 
       # ---------------- Non-command: treat as potential REVIEW reply or SURVEY answer -----
-if start_review_flow:
-    try:
-        from review import handle_review_reply
-        if handle_review_reply(sb, from_number, text, send_text):
+        if start_review_flow:
+            try:
+                from review import handle_review_reply
+                if handle_review_reply(sb, from_number, text, send_text):
+                    return "ok", 200
+            except Exception as e:
+                print("review reply handler error:", e)
+        
+        handled = handle_profile_answer(sb, from_number, text, send_text)
+        if handled:
             return "ok", 200
-    except Exception as e:
-        print("review reply handler error:", e)
-
-handled = handle_profile_answer(sb, from_number, text, send_text)
-if handled:
-    return "ok", 200
 
 
 # ------------------------------------------------------------------------------
