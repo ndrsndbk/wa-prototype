@@ -6,9 +6,10 @@ Flask app for WhatsApp Cloud API loyalty card prototype.
     TEST    -> send demo card
     STAMP   -> increment visit + send updated card   (SALE kept as legacy alias)
     SURVEY  -> start 3-question onboarding flow (qa_handler.py)
-    REVIEW  -> review/feedback flow (review.py) [optional module]
-    CLOCKIN -> staff shift clock-in (clockin.py)    [optional module]
-    CHECKIN -> member/customer check-in (checkin.py) [optional module; gym use case]
+    REVIEW  -> send review prompt (review.py)
+    GOOGLE  -> send Google review link (review.py)
+    CLOCKIN -> staff shift clock-in (clockin.py)
+    CHECKIN -> member/customer check-in (checkin.py)
     REPORT  -> owner summary (active last 7d + growth % of total)
 - Uses supabase-py HTTP client (no direct TCP DB connections)
 - Cache-busted image URLs so WhatsApp/Facebook fetch a fresh PNG
@@ -36,9 +37,10 @@ except Exception:
     handle_checkin = None
 
 try:
-    from review import start_review_flow  # def start_review_flow(sb, from_number, send_text)
+    from review import start_review_flow, send_google_review_link  # review flows
 except Exception:
     start_review_flow = None
+    send_google_review_link = None
 
 # ------------------------------------------------------------------------------
 # Flask & environment
@@ -187,11 +189,18 @@ def handle_webhook():
 
         if token == "REVIEW":
             if start_review_flow:
-                start_review_flow(sb, from_number, send_text)
+                start_review_flow(sb, from_number, send_text, wa_name)
             else:
                 # fallback: reuse onboarding flow until review module is added
                 start_profile_flow(sb, from_number, send_text)
                 send_text(from_number, "ℹ️ REVIEW flow is in preview — using the standard survey for now.")
+            return "ok", 200
+
+        if token == "GOOGLE":
+            if send_google_review_link:
+                send_google_review_link(sb, from_number, send_text, wa_name)
+            else:
+                send_text(from_number, "🌟 GOOGLE review module coming soon.")
             return "ok", 200
 
         if token == "CLOCKIN":
