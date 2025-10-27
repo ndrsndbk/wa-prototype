@@ -37,10 +37,12 @@ except Exception:
     handle_checkin = None
 
 try:
-    from review import start_review_flow, send_google_review_link  # review flows
+    # review flows (including reply handler)
+    from review import start_review_flow, send_google_review_link, handle_review_reply
 except Exception:
     start_review_flow = None
     send_google_review_link = None
+    handle_review_reply = None
 
 # ------------------------------------------------------------------------------
 # Flask & environment
@@ -191,7 +193,6 @@ def handle_webhook():
             if start_review_flow:
                 start_review_flow(sb, from_number, send_text, wa_name)
             else:
-                # fallback: reuse onboarding flow until review module is added
                 start_profile_flow(sb, from_number, send_text)
                 send_text(from_number, "ℹ️ REVIEW flow is in preview — using the standard survey for now.")
             return "ok", 200
@@ -245,19 +246,18 @@ def handle_webhook():
             send_text(from_number, report_text)
             return "ok", 200
 
-      # ---------------- Non-command: treat as potential REVIEW reply or SURVEY answer -----
-        if start_review_flow:
-            try:
-                from review import handle_review_reply
-                if handle_review_reply(sb, from_number, text, send_text):
-                    return "ok", 200
-            except Exception as e:
-                print("review reply handler error:", e)
-        
+        # ---------------- Non-command: treat as potential REVIEW reply or SURVEY answer -----
+        if handle_review_reply and handle_review_reply(sb, from_number, text, send_text):
+            return "ok", 200
+
         handled = handle_profile_answer(sb, from_number, text, send_text)
         if handled:
             return "ok", 200
 
+    except Exception as exc:
+        print("Webhook error:", exc)
+
+    return "ok", 200
 
 # ------------------------------------------------------------------------------
 # Card endpoints (SVG->PNG; prevent server-side caching)
