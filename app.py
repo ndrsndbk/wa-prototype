@@ -3,10 +3,13 @@ Flask app for WhatsApp Cloud API loyalty card prototype.
 
 - Renders stamp card via SVG->PNG (card_svg.render_card_png) for rock-solid layout
 - Commands:
-    TEST   -> send demo card
-    SALE   -> increment visit + send updated card
-    SURVEY -> start 3-question onboarding flow (qa_handler.py)
-    REPORT -> owner summary (active last 7d + growth % of total)
+    TEST    -> send demo card
+    STAMP   -> increment visit + send updated card   (SALE kept as legacy alias)
+    SURVEY  -> start 3-question onboarding flow (qa_handler.py)
+    REVIEW  -> review/feedback flow (review.py) [optional module]
+    CLOCKIN -> staff shift clock-in (clockin.py)    [optional module]
+    CHECKIN -> customer check-in (checkin.py)       [optional module]
+    REPORT  -> owner summary (active last 7d + growth % of total)
 - Uses supabase-py HTTP client (no direct TCP DB connections)
 - Cache-busted image URLs so WhatsApp/Facebook fetch a fresh PNG
 """
@@ -18,8 +21,24 @@ from flask import Flask, request, send_file, redirect, url_for, make_response
 import requests
 from supabase import create_client
 
-from card_svg import render_card_png                 # SVG->PNG renderer (new)
-from qa_handler import start_profile_flow, handle_profile_answer  # your survey flow
+from card_svg import render_card_png
+from qa_handler import start_profile_flow, handle_profile_answer  # existing survey flow
+
+# --- Optional feature modules (safe to miss during rollout) -------------------
+try:
+    from clockin import handle_clockin  # def handle_clockin(sb, from_number, send_text)
+except Exception:
+    handle_clockin = None
+
+try:
+    from checkin import handle_checkin  # def handle_checkin(sb, from_number, send_text)
+except Exception:
+    handle_checkin = None
+
+try:
+    from review import start_review_flow  # def start_review_flow(sb, from_number, send_text)
+except Exception:
+    start_review_flow = None
 
 # ------------------------------------------------------------------------------
 # Flask & environment
@@ -46,9 +65,7 @@ except Exception:
 # WhatsApp helpers
 # ------------------------------------------------------------------------------
 def build_card_url(visits: int) -> str:
-    """
-    Build a cache-busted URL for the image so WhatsApp/Facebook fetch a fresh PNG.
-    """
+    """Build a cache-busted URL so WhatsApp/Facebook fetch a fresh PNG."""
     base = (HOST_URL or request.url_root).rstrip("/")
     v = int(time.time() // 10)  # 10s buckets; prevents infinite new URLs
     return f"{base}/card/{int(visits)}.png?v={v}"
@@ -122,8 +139,9 @@ def handle_webhook():
             return "ignored", 200
 
         from_number = message.get("from")
-        text = ((message.get("text") or {}).get("body") or "").strip()
-        token = text.upper()
+        text_raw = ((message.get("text") or {}).get("body") or "")
+        text = text_raw.strip()
+        token = text.upper()  # normalize to prevent casing bugs
 
         # ---------------- Commands ----------------
         if token == "TEST":
@@ -131,7 +149,8 @@ def handle_webhook():
             send_text(from_number, "👋 Thanks for testing! Here's your demo loyalty card.")
             return "ok", 200
 
-        if token == "SALE":
+        # STAMP is the new command; keep SALE as a legacy alias for now
+        if token in ("STAMP", "SALE"):
             row = fetch_single_customer(sb, from_number)
             visits = int(row.get("number_of_visits", 0)) + 1 if row else 1
             try:
@@ -155,6 +174,29 @@ def handle_webhook():
 
         if token == "SURVEY":
             start_profile_flow(sb, from_number, send_text)
+            return "ok", 200
+
+        if token == "REVIEW":
+            if start_review_flow:
+                start_review_flow(sb, from_number, send_text)
+            else:
+                # fallback: reuse onboarding flow until review module is added
+                start_profile_flow(sb, from_number, send_text)
+                send_text(from_number, "ℹ️ REVIEW flow is in preview — using the standard survey for now.")
+            return "ok", 200
+
+        if token == "CLOCKIN":
+            if handle_clockin:
+                handle_clockin(sb, from_number, send_text)
+            else:
+                send_text(from_number, "🕒 CLOCKIN coming soon — module not deployed yet.")
+            return "ok", 200
+
+        if token == "CHECKIN":
+            if handle_checkin:
+                handle_checkin(sb, from_number, send_text)
+            else:
+                send_text(from_number, "✅ CHECKIN coming soon — module not deployed yet.")
             return "ok", 200
 
         if token == "REPORT":
@@ -185,7 +227,7 @@ def handle_webhook():
             send_text(from_number, report_text)
             return "ok", 200
 
-        # ---------------- Non-command: treat as potential SURVEY answer ----------------
+        # ---------------- Non-command: treat as potential SURVEY/REVIEW answer -----
         handled = handle_profile_answer(sb, from_number, text, send_text)
         if handled:
             return "ok", 200
