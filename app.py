@@ -245,15 +245,19 @@ def handle_webhook():
             send_text(from_number, report_text)
             return "ok", 200
 
-        # ---------------- Non-command: treat as potential SURVEY/REVIEW answer -----
-        handled = handle_profile_answer(sb, from_number, text, send_text)
-        if handled:
+      # ---------------- Non-command: treat as potential REVIEW reply or SURVEY answer -----
+if start_review_flow:
+    try:
+        from review import handle_review_reply
+        if handle_review_reply(sb, from_number, text, send_text):
             return "ok", 200
+    except Exception as e:
+        print("review reply handler error:", e)
 
-    except Exception as exc:
-        print("Webhook error:", exc)
-
+handled = handle_profile_answer(sb, from_number, text, send_text)
+if handled:
     return "ok", 200
+
 
 # ------------------------------------------------------------------------------
 # Card endpoints (SVG->PNG; prevent server-side caching)
