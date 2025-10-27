@@ -8,7 +8,7 @@ Flask app for WhatsApp Cloud API loyalty card prototype.
     SURVEY  -> start 3-question onboarding flow (qa_handler.py)
     REVIEW  -> review/feedback flow (review.py) [optional module]
     CLOCKIN -> staff shift clock-in (clockin.py)    [optional module]
-    CHECKIN -> customer check-in (checkin.py)       [optional module]
+    CHECKIN -> member/customer check-in (checkin.py) [optional module; gym use case]
     REPORT  -> owner summary (active last 7d + growth % of total)
 - Uses supabase-py HTTP client (no direct TCP DB connections)
 - Cache-busted image URLs so WhatsApp/Facebook fetch a fresh PNG
@@ -24,14 +24,14 @@ from supabase import create_client
 from card_svg import render_card_png
 from qa_handler import start_profile_flow, handle_profile_answer  # existing survey flow
 
-# --- Optional feature modules (safe to miss during rollout) -------------------
+# --- Optional feature modules (safe if missing during rollout) -----------------
 try:
-    from clockin import handle_clockin  # def handle_clockin(sb, from_number, send_text)
+    from clockin import handle_clockin  # def handle_clockin(sb, from_number, send_text, display_name=None)
 except Exception:
     handle_clockin = None
 
 try:
-    from checkin import handle_checkin  # def handle_checkin(sb, from_number, send_text)
+    from checkin import handle_checkin  # def handle_checkin(sb, from_number, send_text, display_name=None)
 except Exception:
     handle_checkin = None
 
@@ -138,10 +138,19 @@ def handle_webhook():
         if not message:
             return "ignored", 200
 
+        # WhatsApp identifiers
         from_number = message.get("from")
+
+        # Capture profile name if provided
+        contacts = value.get("contacts") or []
+        wa_name = None
+        if contacts:
+            wa_name = (contacts[0].get("profile") or {}).get("name")
+
+        # Normalize incoming text to avoid case-sensitivity bugs
         text_raw = ((message.get("text") or {}).get("body") or "")
         text = text_raw.strip()
-        token = text.upper()  # normalize to prevent casing bugs
+        token = text.upper()
 
         # ---------------- Commands ----------------
         if token == "TEST":
@@ -187,14 +196,14 @@ def handle_webhook():
 
         if token == "CLOCKIN":
             if handle_clockin:
-                handle_clockin(sb, from_number, send_text)
+                handle_clockin(sb, from_number, send_text, wa_name)
             else:
                 send_text(from_number, "🕒 CLOCKIN coming soon — module not deployed yet.")
             return "ok", 200
 
         if token == "CHECKIN":
             if handle_checkin:
-                handle_checkin(sb, from_number, send_text)
+                handle_checkin(sb, from_number, send_text, wa_name)
             else:
                 send_text(from_number, "✅ CHECKIN coming soon — module not deployed yet.")
             return "ok", 200
