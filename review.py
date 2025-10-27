@@ -146,3 +146,27 @@ def send_google_review_link(sb, from_number: str, send_text, display_name: str |
         sb.table("responses").insert(payload).execute()
     except Exception as e:
         print("review: responses insert error (GOOGLE):", e)
+        
+def handle_review_reply(sb, from_number: str, text: str, send_text):
+    """
+    Capture any text reply after a review prompt and store it under the responses table.
+    """
+    if not text:
+        return False
+
+    # Save the reply
+    payload = {
+        "customer_id": from_number,
+        "prompt": text,
+        "created_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "channel": "whatsapp",
+        "source_trigger": "REVIEW_REPLY",
+        "status": "received",
+    }
+    try:
+        sb.table("responses").insert(payload).execute()
+        send_text(from_number, "🙏 Thank you for your feedback — it’s been noted and shared with our team.")
+        return True
+    except Exception as e:
+        print("review: insert error (reply):", e)
+        return False
