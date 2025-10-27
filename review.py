@@ -170,3 +170,27 @@ def handle_review_reply(sb, from_number: str, text: str, send_text):
     except Exception as e:
         print("review: insert error (reply):", e)
         return False
+
+def handle_review_reply(sb, from_number: str, text: str, send_text):
+    if not text:
+        return False
+
+    payload = {
+        "customer_id": from_number,
+        "prompt": text,
+        "created_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "channel": "whatsapp",
+        "source_trigger": "REVIEW_REPLY",
+        "status": "received",
+    }
+    try:
+        sb.table("responses").insert(payload).execute()
+    except Exception as e:
+        print("review: insert error (reply):", e)
+        # We STILL consume the message to avoid falling through to the survey.
+        # You already thanked the user below.
+
+    # Always acknowledge and consume
+    send_text(from_number, "🙏 Thank you for your feedback — it’s been noted and shared with our team.")
+    return True
+
