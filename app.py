@@ -1,7 +1,7 @@
 """
 Flask app for WhatsApp Cloud API loyalty card prototype.
 
-- Renders stamp card via SVG->PNG (card_svg.render_card_png) for rock-solid layout
+- Uses pre-rendered PNGs hosted on Supabase Storage (CDN) for stamp cards
 - Commands:
     TEST    -> send demo card
     STAMP   -> increment visit + send updated card   (SALE kept as legacy alias)
@@ -12,7 +12,6 @@ Flask app for WhatsApp Cloud API loyalty card prototype.
     CHECKIN -> member/customer check-in (checkin.py)
     REPORT  -> owner summary (active last 7d + growth % of total)
 - Uses supabase-py HTTP client (no direct TCP DB connections)
-- Cache-busted image URLs so WhatsApp/Facebook fetch a fresh PNG
 """
 
 import os
@@ -22,6 +21,7 @@ from flask import Flask, request, send_file, redirect, url_for, make_response
 import requests
 from supabase import create_client
 
+# If you still have a dynamic renderer in your repo, we keep import but not used for WhatsApp now
 from card_svg import render_card_png
 from qa_handler import start_profile_flow, handle_profile_answer  # existing survey flow
 
@@ -52,7 +52,14 @@ app = Flask(__name__)
 VERIFY_TOKEN    = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token")
 WHATSAPP_TOKEN  = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-HOST_URL        = os.getenv("HOST_URL")  # e.g. https://wa-prototype.onrender.com
+
+# Static card hosting (defaults point to your provided Supabase URL & naming)
+CARDS_BASE_URL  = os.getenv(
+    "CARDS_BASE_URL",
+    "https://lhbtgjvejsnsrlstwlwl.supabase.co/storage/v1/object/public/cards"
+)
+CARDS_VERSION   = os.getenv("CARDS_VERSION", "v1")
+CARD_PREFIX     = os.getenv("CARD_PREFIX", "Demo_Shop_")  # filename prefix e.g., Demo_Shop_0.png
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY", "")
@@ -69,10 +76,14 @@ except Exception:
 # WhatsApp helpers
 # ------------------------------------------------------------------------------
 def build_card_url(visits: int) -> str:
-    """Build a cache-busted URL so WhatsApp/Facebook fetch a fresh PNG."""
-    base = (HOST_URL or request.url_root).rstrip("/")
-    v = int(time.time() // 10)  # 10s buckets; prevents infinite new URLs
-    return f"{base}/card/{int(visits)}.png?v={v}"
+    """
+    Return the CDN URL to a pre-rendered, immutable PNG for the given visit count.
+    Files must exist in Supabase Storage at:
+      {CARDS_BASE_URL}/{CARDS_VERSION}/{CARD_PREFIX}{n}.png
+      e.g., https://.../cards/v1/Demo_Shop_3.png
+    """
+    v = max(0, min(10, int(visits)))
+    return f"{CARDS_BASE_URL}/{CARDS_VERSION}/{CARD_PREFIX}{v}.png"
 
 def send_text(to: str, body: str) -> None:
     if not (WHATSAPP_TOKEN and PHONE_NUMBER_ID):
@@ -193,6 +204,7 @@ def handle_webhook():
             if start_review_flow:
                 start_review_flow(sb, from_number, send_text, wa_name)
             else:
+                # fallback: reuse onboarding flow until review module is added
                 start_profile_flow(sb, from_number, send_text)
                 send_text(from_number, "ℹ️ REVIEW flow is in preview — using the standard survey for now.")
             return "ok", 200
@@ -260,12 +272,13 @@ def handle_webhook():
     return "ok", 200
 
 # ------------------------------------------------------------------------------
-# Card endpoints (SVG->PNG; prevent server-side caching)
+# Card endpoints (legacy dynamic renderer; safe to remove later)
 # ------------------------------------------------------------------------------
 @app.route("/card/<int:visits>.png")
 def card_png(visits: int):
     buf = render_card_png(visits)
     resp = make_response(send_file(buf, mimetype="image/png"))
+    # These headers were to defeat caching; not needed for CDN paths
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
