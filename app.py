@@ -1,298 +1,304 @@
-"""
-Flask app for WhatsApp Cloud API loyalty card prototype.
-
-- Uses pre-rendered PNGs hosted on Supabase Storage (CDN) for stamp cards
-- Commands:
-    TEST    -> send demo card
-    STAMP   -> increment visit + send updated card   (SALE kept as legacy alias)
-    SURVEY  -> start 3-question onboarding flow (qa_handler.py)
-    REVIEW  -> send review prompt (review.py)
-    GOOGLE  -> send Google review link (review.py)
-    CLOCKIN -> staff shift clock-in (clockin.py)
-    CHECKIN -> member/customer check-in (checkin.py)
-    REPORT  -> owner summary (active last 7d + growth % of total)
-- Uses supabase-py HTTP client (no direct TCP DB connections)
-"""
-
-import os
-import time
-import datetime
-from flask import Flask, request, send_file, redirect, url_for, make_response
+import os, json, time, datetime
+from typing import Optional, Dict, Any
+from flask import Flask, request, jsonify, abort
 import requests
-from supabase import create_client
 
-# If you still have a dynamic renderer in your repo, we keep import but not used for WhatsApp now
-from card_svg import render_card_png
-from qa_handler import start_profile_flow, handle_profile_answer  # existing survey flow
+# ======== ENV ========
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
+PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my-verify-token")  # for webhook setup
 
-# --- Optional feature modules (safe if missing during rollout) -----------------
-try:
-    from clockin import handle_clockin  # def handle_clockin(sb, from_number, send_text, display_name=None)
-except Exception:
-    handle_clockin = None
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")  # service role for upsert
 
-try:
-    from checkin import handle_checkin  # def handle_checkin(sb, from_number, send_text, display_name=None)
-except Exception:
-    handle_checkin = None
+# ======== EXTERNAL CLIENTS ========
+from supabase import create_client, Client  # pip install supabase
+sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-try:
-    # review flows (including reply handler)
-    from review import start_review_flow, send_google_review_link, handle_review_reply
-except Exception:
-    start_review_flow = None
-    send_google_review_link = None
-    handle_review_reply = None
+# Reuse TCP connections to Meta (faster than new requests each time)
+WA_SESSION = requests.Session()
+WA_SESSION.headers.update({
+    "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+    "Content-Type": "application/json"
+})
+WA_URL = f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
 
-# ------------------------------------------------------------------------------
-# Flask & environment
-# ------------------------------------------------------------------------------
+# ======== APP ========
 app = Flask(__name__)
 
-VERIFY_TOKEN    = os.getenv("WHATSAPP_VERIFY_TOKEN", "my_verify_token")
-WHATSAPP_TOKEN  = os.getenv("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+# ------- minimal in-memory cache for state (optional micro-optimization) -------
+_state_cache: Dict[str, Dict[str, Any]] = {}  # {customer_id: {"active_flow":..., "step":..., "ts":...}}
+STATE_TTL = 120  # seconds
 
-# Static card hosting (defaults point to your provided Supabase URL & naming)
-CARDS_BASE_URL  = os.getenv(
-    "CARDS_BASE_URL",
-    "https://lhbtgjvejsnsrlstwlwl.supabase.co/storage/v1/object/public/cards"
-)
-CARDS_VERSION   = os.getenv("CARDS_VERSION", "v1")
-CARD_PREFIX     = os.getenv("CARD_PREFIX", "Demo_Shop_")  # filename prefix e.g., Demo_Shop_0.png
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY", "")
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY/KEY")
-
-sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-try:
-    sb.postgrest.schema = "public"
-except Exception:
-    pass
-
-# ------------------------------------------------------------------------------
-# WhatsApp helpers
-# ------------------------------------------------------------------------------
-def build_card_url(visits: int) -> str:
-    """
-    Return the CDN URL to a pre-rendered, immutable PNG for the given visit count.
-    Files must exist in Supabase Storage at:
-      {CARDS_BASE_URL}/{CARDS_VERSION}/{CARD_PREFIX}{n}.png
-      e.g., https://.../cards/v1/Demo_Shop_3.png
-    """
-    v = max(0, min(10, int(visits)))
-    return f"{CARDS_BASE_URL}/{CARDS_VERSION}/{CARD_PREFIX}{v}.png"
-
-def send_text(to: str, body: str) -> None:
-    if not (WHATSAPP_TOKEN and PHONE_NUMBER_ID):
-        return
-    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}}
-    try:
-        requests.post(url, headers=headers, json=payload, timeout=12)
-    except Exception as e:
-        print("send_text error:", e)
-
-def send_image(to: str, link: str) -> None:
-    if not (WHATSAPP_TOKEN and PHONE_NUMBER_ID):
-        return
-    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {"messaging_product": "whatsapp", "to": to, "type": "image", "image": {"link": link}}
-    try:
-        requests.post(url, headers=headers, json=payload, timeout=12)
-    except Exception as e:
-        print("send_image error:", e)
-
-# ------------------------------------------------------------------------------
-# Supabase helpers
-# ------------------------------------------------------------------------------
-def fetch_single_customer(sb_client, customer_id: str):
-    """Return single customer dict or None (safe even when no rows)."""
-    try:
-        resp = (
-            sb_client.table("customers")
-            .select("customer_id, number_of_visits, last_visit_at")
-            .eq("customer_id", customer_id)
-            .limit(1)
-            .execute()
-        )
-        rows = getattr(resp, "data", None) or []
-        return rows[0] if rows else None
-    except Exception as e:
-        print("fetch_single_customer error:", e)
+def _cache_get(customer_id: str) -> Optional[Dict[str, Any]]:
+    rec = _state_cache.get(customer_id)
+    if not rec:
         return None
+    if (time.time() - rec.get("ts", 0)) > STATE_TTL:
+        _state_cache.pop(customer_id, None)
+        return None
+    return rec
 
-# ------------------------------------------------------------------------------
-# Routes
-# ------------------------------------------------------------------------------
-@app.route("/", methods=["GET"])
-def health():
-    return "OK", 200
+def _cache_put(customer_id: str, state: Dict[str, Any]) -> None:
+    state = dict(state or {})
+    state["ts"] = time.time()
+    _state_cache[customer_id] = state
 
+# ======== STATE PERSISTENCE ========
+def ensure_tables():
+    # idempotent: create if not exists (run once on boot)
+    sb.rpc("sql", {
+        "query": """
+        create table if not exists conversation_state(
+          customer_id text primary key,
+          active_flow text,
+          step int default 0,
+          updated_at timestamptz default now()
+        );
+        create table if not exists processed_events(
+          message_id text primary key,
+          processed_at timestamptz default now()
+        );
+        """
+    }).execute()
+
+def get_state(customer_id: str) -> Dict[str, Any]:
+    # try cache
+    c = _cache_get(customer_id)
+    if c: return {"active_flow": c.get("active_flow"), "step": c.get("step")}
+    try:
+        r = sb.table("conversation_state").select("active_flow, step").eq("customer_id", customer_id).limit(1).execute()
+        rows = getattr(r, "data", None) or []
+        state = rows[0] if rows else {"active_flow": None, "step": 0}
+        _cache_put(customer_id, state)
+        return state
+    except Exception as e:
+        print("get_state error:", e)
+        return {"active_flow": None, "step": 0}
+
+def set_state(customer_id: str, flow: Optional[str], step: int = 0):
+    state = {"customer_id": customer_id, "active_flow": flow, "step": step,
+             "updated_at": datetime.datetime.utcnow().isoformat() + "Z"}
+    try:
+        sb.table("conversation_state").upsert(state).execute()
+    except Exception as e:
+        print("set_state error:", e)
+    _cache_put(customer_id, state)
+
+def clear_state(customer_id: str):
+    set_state(customer_id, None, 0)
+
+# ======== IDEMPOTENCY ========
+def already_processed(message_id: str) -> bool:
+    try:
+        r = sb.table("processed_events").select("message_id").eq("message_id", message_id).limit(1).execute()
+        rows = getattr(r, "data", None) or []
+        return len(rows) > 0
+    except Exception as e:
+        print("processed check error:", e)
+        return False
+
+def mark_processed(message_id: str):
+    try:
+        sb.table("processed_events").insert({"message_id": message_id}).execute()
+    except Exception as e:
+        # ignore duplicate key error races
+        print("mark processed error:", e)
+
+# ======== SENDERS ========
+def send_text(to: str, text: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    }
+    try:
+        r = WA_SESSION.post(WA_URL, json=payload, timeout=12)
+        if r.status_code >= 300:
+            print("send_text fail:", r.status_code, r.text)
+    except Exception as e:
+        print("send_text exception:", e)
+
+def send_interactive_buttons(to: str, body_text: str, buttons: list):
+    """
+    buttons: list of dicts: [{"id":"yes_deal","title":"Yes"},{"id":"no_thanks","title":"No"}]
+    """
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body_text},
+            "action": {
+                "buttons": [{"type": "reply", "reply": {"id": b["id"], "title": b["title"]}} for b in buttons]
+            }
+        }
+    }
+    try:
+        r = WA_SESSION.post(WA_URL, json=payload, timeout=12)
+        if r.status_code >= 300:
+            print("send_interactive fail:", r.status_code, r.text)
+    except Exception as e:
+        print("send_interactive exception:", e)
+
+# ======== FLOW STARTERS / HANDLERS (stub the internals you already have) ========
+def start_survey_flow(customer_id: str):
+    send_text(customer_id, "📝 Survey started. How was your visit today? (1–5)")
+    set_state(customer_id, "survey", 1)
+
+def start_review_flow(customer_id: str, wa_name: Optional[str]):
+    send_text(customer_id, f"⭐ Thanks{(' ' + wa_name) if wa_name else ''}! Would you recommend us? (Yes/No)")
+    set_state(customer_id, "review", 1)
+
+def handle_survey_reply(customer_id: str, content: str) -> bool:
+    """Return True if consumed."""
+    st = get_state(customer_id)
+    if st.get("active_flow") != "survey":
+        return False
+    step = st.get("step", 0)
+
+    if step == 1:
+        # rating
+        send_text(customer_id, "Thanks! Any comments to add?")
+        set_state(customer_id, "survey", 2)
+        return True
+    elif step == 2:
+        send_text(customer_id, "Appreciate the feedback! ✅")
+        clear_state(customer_id)
+        return True
+    return False
+
+def handle_review_reply(customer_id: str, content: str) -> bool:
+    st = get_state(customer_id)
+    if st.get("active_flow") != "review":
+        return False
+    step = st.get("step", 0)
+
+    if step == 1:
+        if str(content).strip().lower() in ("yes", "y", "review_yes"):
+            send_text(customer_id, "Amazing! Here’s the Google review link: https://g.page/r/your-link")
+        else:
+            send_text(customer_id, "No worries—thanks for your time! 🙏")
+        clear_state(customer_id)
+        return True
+    return False
+
+# ======== ROUTER ========
 @app.route("/webhook", methods=["GET"])
-def verify_webhook():
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return challenge or "", 200
-    return "Forbidden", 403
+def verify():
+    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.verify_token") == VERIFY_TOKEN:
+        return request.args.get("hub.challenge", ""), 200
+    return "forbidden", 403
 
 @app.route("/webhook", methods=["POST"])
-def handle_webhook():
-    data = request.get_json(silent=True) or {}
+def inbound():
+    data = request.get_json(silent=True, force=True) or {}
     try:
-        entry   = (data.get("entry") or [None])[0] or {}
-        changes = (entry.get("changes") or [None])[0] or {}
-        value   = changes.get("value") or {}
-        message = (value.get("messages") or [None])[0]
-        if not message:
-            return "ignored", 200
-
-        # WhatsApp identifiers
-        from_number = message.get("from")
-
-        # Capture profile name if provided
+        entry = (data.get("entry") or [])[0]
+        change = (entry.get("changes") or [])[0]
+        value = change.get("value") or {}
+        messages = value.get("messages") or []
         contacts = value.get("contacts") or []
+        if not messages:
+            return "ok", 200
+
+        msg = messages[0]
+        msg_id = msg.get("id")
+        if msg_id and already_processed(msg_id):
+            return "ok", 200
+        if msg_id:
+            mark_processed(msg_id)
+
+        from_number = msg.get("from")  # E.164
         wa_name = None
         if contacts:
-            wa_name = (contacts[0].get("profile") or {}).get("name")
+            wa_name = ((contacts[0].get("profile") or {}).get("name"))
 
-        # Normalize incoming text to avoid case-sensitivity bugs
-        text_raw = ((message.get("text") or {}).get("body") or "")
-        text = text_raw.strip()
-        token = text.upper()
+        msg_type = msg.get("type")
+        text_body = ((msg.get("text") or {}).get("body") or "") if msg_type == "text" else ""
+        token = text_body.strip().upper()
 
-        # ---------------- Commands ----------------
-        if token == "TEST":
-            send_image(from_number, build_card_url(0))
-            send_text(from_number, "👋 Thanks for testing! Here's your demo loyalty card.")
-            return "ok", 200
+        # Interactive replies (button or list)
+        reply_id = None
+        interactive = msg.get("interactive") if msg_type == "interactive" else None
+        if interactive:
+            if interactive.get("type") == "button_reply":
+                reply_id = (interactive.get("button_reply") or {}).get("id")
+            elif interactive.get("type") == "list_reply":
+                reply_id = (interactive.get("list_reply") or {}).get("id")
 
-        # STAMP is the new command; keep SALE as a legacy alias for now
-        if token in ("STAMP", "SALE"):
-            row = fetch_single_customer(sb, from_number)
-            visits = int(row.get("number_of_visits", 0)) + 1 if row else 1
-            try:
-                sb.table("customers").upsert({
-                    "customer_id": from_number,
-                    "number_of_visits": visits,
-                    "last_visit_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-                }).execute()
-            except Exception as e:
-                print("customers upsert error:", e)
-                send_text(from_number, "⚠️ Sorry, I couldn't record your visit. Please try again.")
+        # === Commands take priority ===
+        if token in ("SURVEY", "REVIEW", "GOOGLE", "CLOCKIN", "CHECKIN", "STOP"):
+            if token == "SURVEY":
+                start_survey_flow(from_number)
+                return "ok", 200
+            if token == "REVIEW":
+                start_review_flow(from_number, wa_name)
+                return "ok", 200
+            if token == "GOOGLE":
+                clear_state(from_number)
+                send_text(from_number, "🌟 Leave a review: https://g.page/r/your-link")
+                return "ok", 200
+            if token == "CLOCKIN":
+                set_state(from_number, "clockin", 1)
+                send_text(from_number, "🕒 Clock-in recorded.")
+                clear_state(from_number)
+                return "ok", 200
+            if token == "CHECKIN":
+                set_state(from_number, "checkin", 1)
+                send_text(from_number, "✅ Check-in successful.")
+                clear_state(from_number)
+                return "ok", 200
+            if token == "STOP":
+                clear_state(from_number)
+                send_text(from_number, "You’ve been unsubscribed from the current flow. 👋")
                 return "ok", 200
 
-            visits = max(1, min(10, visits))
-            send_image(from_number, build_card_url(visits))
-            if visits >= 10:
-                send_text(from_number, "🎉 Free coffee unlocked! Show this to the barista.")
-            else:
-                send_text(from_number, f"Thanks for your visit! You now have {visits} stamp(s).")
-            return "ok", 200
+        # === Route interactive reply by active flow & reply_id ===
+        if reply_id:
+            # Map friendly IDs to text if needed
+            if reply_id in ("review_yes", "yes_deal"):
+                if handle_review_reply(from_number, "yes"):
+                    return "ok", 200
+            elif reply_id in ("review_no", "no_thanks"):
+                if handle_review_reply(from_number, "no"):
+                    return "ok", 200
 
-        if token == "SURVEY":
-            start_profile_flow(sb, from_number, send_text)
-            return "ok", 200
+            # Survey list/button choices could be handled here
+            if handle_survey_reply(from_number, reply_id):
+                return "ok", 200
 
-        if token == "REVIEW":
-            if start_review_flow:
-                start_review_flow(sb, from_number, send_text, wa_name)
-            else:
-                # fallback: reuse onboarding flow until review module is added
-                start_profile_flow(sb, from_number, send_text)
-                send_text(from_number, "ℹ️ REVIEW flow is in preview — using the standard survey for now.")
-            return "ok", 200
+            return "ok", 200  # don't leak to other handlers
 
-        if token == "GOOGLE":
-            if send_google_review_link:
-                send_google_review_link(sb, from_number, send_text, wa_name)
-            else:
-                send_text(from_number, "🌟 GOOGLE review module coming soon.")
-            return "ok", 200
+        # === Plain text goes ONLY to current active flow ===
+        state = get_state(from_number)
+        active = state.get("active_flow")
 
-        if token == "CLOCKIN":
-            if handle_clockin:
-                handle_clockin(sb, from_number, send_text, wa_name)
-            else:
-                send_text(from_number, "🕒 CLOCKIN coming soon — module not deployed yet.")
-            return "ok", 200
+        if active == "review":
+            if handle_review_reply(from_number, text_body):
+                return "ok", 200
 
-        if token == "CHECKIN":
-            if handle_checkin:
-                handle_checkin(sb, from_number, send_text, wa_name)
-            else:
-                send_text(from_number, "✅ CHECKIN coming soon — module not deployed yet.")
-            return "ok", 200
+        if active == "survey":
+            if handle_survey_reply(from_number, text_body):
+                return "ok", 200
 
-        if token == "REPORT":
-            # total customers
-            all_rows = sb.table("customers").select("customer_id").execute().data or []
-            total_customers = len(all_rows)
+        # No active flow – ignore or send a gentle helper
+        # (Comment out to be fully silent)
+        # send_text(from_number, "Reply SURVEY or REVIEW to begin.")
+        return "ok", 200
 
-            # active last 7 days
-            seven_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
-            active_rows = (
-                sb.table("customers")
-                .select("customer_id")
-                .gte("last_visit_at", seven_days_ago)
-                .execute()
-                .data or []
-            )
-            active_count = len(active_rows)
+    except Exception as e:
+        print("webhook error:", e, "payload:", json.dumps(data)[:800])
+        return "ok", 200
 
-            growth_pct = (active_count / total_customers * 100) if total_customers > 0 else 0.0
+# Healthcheck
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({"ok": True, "ts": time.time()}), 200
 
-            report_text = (
-                "📊 *Weekly Report*\n\n"
-                f"Active customers (last 7 days): {active_count}\n"
-                f"Growth vs total: {growth_pct:.1f}%\n\n"
-                "Here's the link to your dashboard:\n"
-                "https://wa-prototype-dashboard-1.streamlit.app/"
-            )
-            send_text(from_number, report_text)
-            return "ok", 200
 
-        # ---------------- Non-command: treat as potential REVIEW reply or SURVEY answer -----
-        if handle_review_reply and handle_review_reply(sb, from_number, text, send_text):
-            return "ok", 200
-
-        handled = handle_profile_answer(sb, from_number, text, send_text)
-        if handled:
-            return "ok", 200
-
-    except Exception as exc:
-        print("Webhook error:", exc)
-
-    return "ok", 200
-
-# ------------------------------------------------------------------------------
-# Card endpoints (legacy dynamic renderer; safe to remove later)
-# ------------------------------------------------------------------------------
-@app.route("/card/<int:visits>.png")
-def card_png(visits: int):
-    buf = render_card_png(visits)
-    resp = make_response(send_file(buf, mimetype="image/png"))
-    # These headers were to defeat caching; not needed for CDN paths
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    resp.headers["Pragma"] = "no-cache"
-    resp.headers["Expires"] = "0"
-    return resp
-
-@app.route("/card")
-def card_query():
-    try:
-        n = int(request.args.get("n", 0))
-    except ValueError:
-        n = 0
-    return redirect(url_for("card_png", visits=max(0, min(10, n))), code=302)
-
-# ------------------------------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 3000))
-    app.run(host="0.0.0.0", port=port)
+    ensure_tables()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
