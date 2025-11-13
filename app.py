@@ -443,10 +443,10 @@ def inbound():
                 active_count = len(active_rows)
                 growth_pct = (active_count / total_customers * 100) if total_customers > 0 else 0.0
                 report_text = (
-                    "📊 *Here's your dashboard*\n\n"
-                    f"Active customers (last 7 days): {active_count}\n"
-                    f"Growth vs total: {growth_pct:.1f}%\n\n"
-                    Dashboard: "https://ndrsndbk.github.io/stamp-card-dashboard/"
+                "📊 *Here's your dashboard*\n\n"
+                f"Active customers (last 7 days): {active_count}\n"
+                f"Growth vs total: {growth_pct:.1f}%\n\n"
+                "Dashboard: https://ndrsndbk.github.io/stamp-card-dashboard/"
                 )
                 send_text(from_number, report_text)
                 return "ok", 200
