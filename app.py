@@ -104,10 +104,18 @@ def send_whatsapp_message(payload: Dict[str, Any]) -> None:
         print("send_whatsapp_message exception:", e)
 
 
-def send_text(to_number: str, body: str) -> None:
+def send_text(to_number: str, *body_parts: str) -> None:
     """
     Convenience wrapper to send a plain text WhatsApp message.
+
+    Accepts one or more body fragments which are concatenated so callers can
+    keep the message formatting readable where it is invoked.
     """
+    if not body_parts:
+        print("send_text called without body; skipping")
+        return
+
+    body = "".join(str(part) for part in body_parts)
     payload = {
         "messaging_product": "whatsapp",
         "to": to_number,
@@ -211,8 +219,23 @@ def get_and_update_streak(customer_id: str) -> Tuple[int, bool, bool]:
     # Parse last_day to date
     last_day = None
     if row and row.get("last_day"):
+        raw_last_day = row["last_day"]
+
+        # Supabase can return DATE columns either as date objects or strings in
+        # a variety of ISO formats (e.g. "2024-05-30", "2024-05-30T00:00:00+00:00").
+        # Normalise to a YYYY-MM-DD string before parsing so that we reliably
+        # detect consecutive-day streaks.
         try:
-            last_day = datetime.date.fromisoformat(str(row["last_day"]))
+            if isinstance(raw_last_day, datetime.date):
+                last_day = raw_last_day
+            else:
+                raw_str = str(raw_last_day).strip()
+                # Keep only the date portion if a timestamp is returned.
+                if "T" in raw_str:
+                    raw_str = raw_str.split("T", 1)[0]
+                elif " " in raw_str:
+                    raw_str = raw_str.split(" ", 1)[0]
+                last_day = datetime.date.fromisoformat(raw_str)
         except Exception:
             last_day = None
 
@@ -353,7 +376,8 @@ def webhook():
                 send_text(
                     from_number,
                     "🏆 *Day 5 Streak!* 🏆\n\n"
-                    "You’ve unlocked *double stamps today* — this visit counts as *+2*. "
+                    "You’ve unlocked *double stamps today* — this visit counts as *+2* and "
+                    "your exclusive *coffee bag reward*!\n"
                     "Keep the momentum going!\n"
                     "_(Double applies to today’s visit only.)_"
                 )
