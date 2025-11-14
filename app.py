@@ -169,22 +169,28 @@ def verify_meta_signature(raw_body: bytes, signature_256: str) -> bool:
 # ----------------------------- STREAK LOGIC -----------------------------------
 def get_and_update_streak(customer_id: str, last_visit_at: Optional[str]) -> int:
     """
-    Very small streak helper:
-    - Reads / writes a `streak_state` table in Supabase with:
-        customer_id (text, PK-ish)
-        last_visit_date (date)
-        streak_days (int)
-    - If the last_visit_date is yesterday → increment streak.
-    - If it is today → keep same streak.
-    - Anything else → reset to 1 (fresh streak).
-    Returns the updated streak_days.
+    Streak helper using the *customer_streaks* table.
+
+    Table structure (Supabase):
+      - customer_id  (text, PK-ish)
+      - streak_days  (int4)
+      - last_day     (date)
+      - updated_at   (timestamptz, optional trigger/default)
+
+    Logic:
+      - If last_day is yesterday → increment streak_days.
+      - If last_day is today     → keep streak_days.
+      - Otherwise                → reset streak_days to 1.
+
+    Returns the updated streak_days for this customer.
     """
 
     today = datetime.date.today()
 
+    # 1) Read current streak row from customer_streaks
     try:
         resp = (
-            sb.table("streak_state")
+            sb.table("customer_streaks")
             .select("*")
             .eq("customer_id", customer_id)
             .limit(1)
@@ -196,31 +202,33 @@ def get_and_update_streak(customer_id: str, last_visit_at: Optional[str]) -> int
         print("get_and_update_streak: select error:", e)
         row = None
 
+    # 2) Decide new streak_days based on last_day
     if row:
         try:
-            last_date_str = row.get("last_visit_date")
-            last_date = datetime.date.fromisoformat(last_date_str) if last_date_str else None
+            last_day_str = row.get("last_day")
+            last_day = datetime.date.fromisoformat(last_day_str) if last_day_str else None
         except Exception:
-            last_date = None
+            last_day = None
 
-        if last_date == today:
+        if last_day == today:
             # Already visited today; streak unchanged.
             streak_days = row.get("streak_days", 1)
-        elif last_date == today - datetime.timedelta(days=1):
+        elif last_day == today - datetime.timedelta(days=1):
             # Consecutive day.
             streak_days = row.get("streak_days", 1) + 1
         else:
             # Break in streak.
             streak_days = 1
     else:
+        # First ever streak row for this customer.
         streak_days = 1
 
-    # Upsert new streak state.
+    # 3) Upsert back into customer_streaks
     try:
-        sb.table("streak_state").upsert(
+        sb.table("customer_streaks").upsert(
             {
                 "customer_id": customer_id,
-                "last_visit_date": today.isoformat(),
+                "last_day": today.isoformat(),
                 "streak_days": streak_days,
             }
         ).execute()
