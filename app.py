@@ -15,7 +15,7 @@ WABA_PHONE_NUMBER_ID = os.getenv("WABA_PHONE_NUMBER_ID", "")  # e.g. 85827223403
 WABA_TOKEN = os.getenv("WABA_TOKEN", "")  # permanent system user token
 
 # Optional webhook verify token (Meta webhook verification handshake)
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "verify_me")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "myverifytoken")
 
 # Optional HMAC secret from Meta (x-hub-signature-256). If unset, signature check is skipped.
 WEBHOOK_APP_SECRET = os.getenv("WEBHOOK_APP_SECRET", "")
