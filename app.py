@@ -9,32 +9,69 @@ import requests
 from flask import Flask, request, jsonify
 
 # ----------------------------- ENV VARS ---------------------------------------
-# WhatsApp (Cloud API)
-WABA_API_VERSION = os.getenv("WABA_API_VERSION", "v23.0")
-WABA_PHONE_NUMBER_ID = os.getenv("WABA_PHONE_NUMBER_ID", "")  # e.g. 858272234034248
-WABA_TOKEN = os.getenv("WABA_TOKEN", "")  # permanent system user token
+# This section centralises all configuration that comes from environment variables.
+# It is designed to work with BOTH your older naming convention (WABA_*, SUPABASE_SERVICE_KEY)
+# and the Render dashboard keys you showed in the screenshot:
+#   PHONE_NUMBER_ID, WHATSAPP_TOKEN, WHATSAPP_VERIFY_TOKEN, SUPABASE_SERVICE_ROLE_KEY, etc.
 
-# Optional webhook verify token (Meta webhook verification handshake)
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "myverifytoken")
+# ---------------- WhatsApp (Cloud API) ----------------
+# Version of the Graph API to call. v23.0 works for current Cloud API.
+WABA_API_VERSION = os.getenv("WABA_API_VERSION", "v23.0")
+
+# Phone number ID used in the WhatsApp Cloud API URL.
+# Priority: WABA_PHONE_NUMBER_ID (new) → PHONE_NUMBER_ID (Render screenshot).
+WABA_PHONE_NUMBER_ID = os.getenv("WABA_PHONE_NUMBER_ID") or os.getenv("PHONE_NUMBER_ID", "")
+
+# Permanent system-user access token.
+# Priority: WABA_TOKEN (new) → WHATSAPP_TOKEN (Render screenshot).
+WABA_TOKEN = os.getenv("WABA_TOKEN") or os.getenv("WHATSAPP_TOKEN", "")
+
+# Webhook verification token used during the Meta webhook "GET" handshake.
+# Priority: VERIFY_TOKEN (new) → WHATSAPP_VERIFY_TOKEN (Render screenshot).
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN") or os.getenv("WHATSAPP_VERIFY_TOKEN", "myverifytoken")
 
 # Optional HMAC secret from Meta (x-hub-signature-256). If unset, signature check is skipped.
 WEBHOOK_APP_SECRET = os.getenv("WEBHOOK_APP_SECRET", "")
 
-# Dashboard URL (for /REPORT)
+# ---------------- Dashboard URL (for /REPORT shortcuts) ----------------
 DASHBOARD_URL = os.getenv(
     "DASHBOARD_URL",
     "https://ndrsndbk.github.io/stamp-card-dashboard/"
 )
 
-# Supabase
+# ---------------- Supabase ----------------
+# Supabase project URL and service key.
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://lhbtgjvejsnsrlstwlwl.supabase.co")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxoYnRnanZlanNuc3Jsc3R3bHdsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjE4NjMyNCwiZXhwIjoyMDcxNzYyMzI0fQ.6Fc20YQezPUX0LqfybirrHzj9eynstHijTx2gDxKr7M")
+
+# Priority: SUPABASE_SERVICE_KEY (old naming) → SUPABASE_SERVICE_ROLE_KEY (Render screenshot).
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in env!")
+    print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY / SUPABASE_SERVICE_ROLE_KEY in env!")
+
+# --------------- Simple startup diagnostics (printed once on boot) --------------
+def env_diagnostics() -> None:
+    """Print a one-shot summary of which critical env vars are loaded.
+    Values are not printed (only booleans) so secrets never leak.
+    """
+    print("\n🔍 ENV DIAGNOSTICS (on boot)")
+    print("-------------------------------------------")
+    print(f"WABA_PHONE_NUMBER_ID loaded:  {bool(WABA_PHONE_NUMBER_ID)} (or PHONE_NUMBER_ID)")
+    print(f"WABA_TOKEN loaded:            {bool(WABA_TOKEN)} (or WHATSAPP_TOKEN)")
+    print(f"VERIFY_TOKEN loaded:          {bool(VERIFY_TOKEN)} (or WHATSAPP_VERIFY_TOKEN)")
+    print(f"SUPABASE_URL loaded:          {bool(SUPABASE_URL)}")
+    print(f"SUPABASE_SERVICE_KEY loaded:  {bool(SUPABASE_SERVICE_KEY)} (or SUPABASE_SERVICE_ROLE_KEY)")
+    print(f"WEBHOOK_APP_SECRET set:       {bool(WEBHOOK_APP_SECRET)}")
+    print(f"DASHBOARD_URL:                {DASHBOARD_URL}")
+    print("-------------------------------------------\n")
+
+
+env_diagnostics()
 
 # ----------------------------- SUPABASE CLIENT --------------------------------
 from supabase import create_client, Client
+
+# Service-role client (used server-side only; never expose this key in frontend)
 sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # ----------------------------- FLASK APP --------------------------------------
@@ -44,55 +81,61 @@ app = Flask(__name__)
 def send_whatsapp_message(payload: Dict[str, Any]) -> None:
     """
     Low-level WhatsApp Cloud API sender.
+    - Expects a fully formed payload (text, media, template, etc.).
+    - Uses WABA_PHONE_NUMBER_ID and WABA_TOKEN from env.
     """
     if not WABA_PHONE_NUMBER_ID or not WABA_TOKEN:
         print("⚠️ Missing WABA_PHONE_NUMBER_ID or WABA_TOKEN.")
         return
+
     url = f"https://graph.facebook.com/{WABA_API_VERSION}/{WABA_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WABA_TOKEN}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=20)
         if r.status_code >= 400:
-            print("❌ WhatsApp send error:", r.status_code, r.text)
+            print("❌ WhatsApp send error:", r.status_code, r.text[:500])
         else:
-            print("✅ WhatsApp message sent:", r.json())
+            print("✅ WhatsApp send ok:", r.json())
     except Exception as e:
-        print("❌ WhatsApp send exception:", e)
+        print("send_whatsapp_message exception:", e)
 
-def send_text(to_number: str, text: str) -> None:
+
+def send_text(to_number: str, body: str) -> None:
+    """
+    Convenience wrapper to send a plain text message.
+    `to_number` must be the WhatsApp ID (phone in international format, no '+').
+    """
     payload = {
         "messaging_product": "whatsapp",
         "to": to_number,
         "type": "text",
-        "text": {"body": text}
+        "text": {"body": body},
     }
     send_whatsapp_message(payload)
 
-def send_image(to_number: str, image_url: str, caption: Optional[str] = None) -> None:
-    msg = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "image",
-        "image": {"link": image_url}
-    }
-    if caption:
-        msg["image"]["caption"] = caption
-    send_whatsapp_message(msg)
 
-def build_card_url(visits: int) -> str:
+def build_stamp_card_url(visits: int) -> str:
     """
-    Map 0..10 visits to a pre-rendered card asset URL.
-    You already host these in Supabase Storage (example shown).
+    Map a customer's visit count → correct static PNG URL.
+    The PNGs are pre-rendered and stored in Supabase storage:
+      Demo_Shop_0.png ... Demo_Shop_10.png
     """
-    visits = max(0, min(10, int(visits)))
-    # Change this base to your bucket path:
+    if visits < 0:
+        visits = 0
+    if visits > 10:
+        visits = 10
     base = "https://lhbtgjvejsnsrlstwlwl.supabase.co/storage/v1/object/public/cards/v1/Demo_Shop_"
     return f"{base}{visits}.png"
 
+
 def fetch_single_customer(customer_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch one row from the `customers` table by `customer_id`.
+    Returns None if the customer does not exist.
+    """
     try:
         resp = sb.table("customers").select("*").eq("customer_id", customer_id).limit(1).execute()
         rows = getattr(resp, "data", None) or []
@@ -100,6 +143,7 @@ def fetch_single_customer(customer_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         print("fetch_single_customer error:", e)
         return None
+
 
 def verify_meta_signature(raw_body: bytes, signature_256: str) -> bool:
     """
@@ -121,91 +165,110 @@ def verify_meta_signature(raw_body: bytes, signature_256: str) -> bool:
         print("verify_meta_signature error:", e)
         return False
 
-# ---------------------------- STREAK HELPERS ----------------------------------
-def _utc_today() -> datetime.date:
-    # Use UTC consistently since you store last_visit_at as UTC ISO
-    return datetime.datetime.utcnow().date()
 
-def _date_from_ts(ts: Optional[str]) -> Optional[datetime.date]:
-    if not ts:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
-    except Exception:
-        return None
-
+# ----------------------------- STREAK LOGIC -----------------------------------
 def get_and_update_streak(customer_id: str, last_visit_at: Optional[str]) -> int:
     """
-    Returns new streak_days after applying today's visit.
-
-    Logic:
-      - If last_day == today       -> streak unchanged (no extra day)
-      - If last_day == today - 1   -> streak_days += 1
-      - Else                       -> streak_days = 1
-    Also upserts the row in customer_streaks with last_day=today.
+    Very small streak helper:
+    - Reads / writes a `streak_state` table in Supabase with:
+        customer_id (text, PK-ish)
+        last_visit_date (date)
+        streak_days (int)
+    - If the last_visit_date is yesterday → increment streak.
+    - If it is today → keep same streak.
+    - Anything else → reset to 1 (fresh streak).
+    Returns the updated streak_days.
     """
-    today = _utc_today()
-    yesterday = today - datetime.timedelta(days=1)
-    last_day_from_customer = _date_from_ts(last_visit_at)
 
-    # Read current row
+    today = datetime.date.today()
+
     try:
-        resp = sb.table("customer_streaks").select("streak_days,last_day").eq("customer_id", customer_id).limit(1).execute()
+        resp = (
+            sb.table("streak_state")
+            .select("*")
+            .eq("customer_id", customer_id)
+            .limit(1)
+            .execute()
+        )
         rows = getattr(resp, "data", None) or []
+        row = rows[0] if rows else None
     except Exception as e:
-        print("streak select error:", e)
-        rows = []
+        print("get_and_update_streak: select error:", e)
+        row = None
 
-    if rows:
-        cur = rows[0]
-        streak_days = int(cur.get("streak_days", 1))
-        last_day = datetime.date.fromisoformat(cur["last_day"]) if cur.get("last_day") else last_day_from_customer
+    if row:
+        try:
+            last_date_str = row.get("last_visit_date")
+            last_date = datetime.date.fromisoformat(last_date_str) if last_date_str else None
+        except Exception:
+            last_date = None
+
+        if last_date == today:
+            # Already visited today; streak unchanged.
+            streak_days = row.get("streak_days", 1)
+        elif last_date == today - datetime.timedelta(days=1):
+            # Consecutive day.
+            streak_days = row.get("streak_days", 1) + 1
+        else:
+            # Break in streak.
+            streak_days = 1
     else:
         streak_days = 1
-        last_day = last_day_from_customer
 
-    if last_day == today:
-        new_streak = streak_days
-    elif last_day == yesterday:
-        new_streak = streak_days + 1
-    else:
-        new_streak = 1
-
-    # Upsert with today's date
+    # Upsert new streak state.
     try:
-        sb.table("customer_streaks").upsert({
-            "customer_id": customer_id,
-            "streak_days": new_streak,
-            "last_day": str(today),
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }).execute()
+        sb.table("streak_state").upsert(
+            {
+                "customer_id": customer_id,
+                "last_visit_date": today.isoformat(),
+                "streak_days": streak_days,
+            }
+        ).execute()
     except Exception as e:
-        print("streak upsert error:", e)
+        print("get_and_update_streak: upsert error:", e)
 
-    return new_streak
+    return streak_days
+
 
 # ----------------------------- ROUTES -----------------------------------------
 @app.route("/", methods=["GET"])
-def index():
+def health():
+    """
+    Simple healthcheck endpoint so that Render / uptime monitors can see the app is alive.
+    """
     return "OK", 200
 
-@app.route("/healthz", methods=["GET"])
-def health():
-    return jsonify({"ok": True, "time": datetime.datetime.utcnow().isoformat() + "Z"}), 200
 
-# Webhook verification (Meta)
 @app.route("/webhook", methods=["GET"])
-def verify():
+def verify_webhook():
+    """
+    Meta / WhatsApp Webhook verification (GET).
+    This is called once when you configure the webhook URL in WhatsApp Manager.
+    """
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return challenge, 200
-    return "forbidden", 403
 
-# Webhook receiver (Meta -> your app)
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        print("✅ Webhook verified.")
+        return challenge, 200
+    else:
+        print("❌ Webhook verification failed.")
+        return "Verification failed", 403
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    """
+    Main webhook handler for incoming WhatsApp messages.
+    Handles:
+      - STAMP
+      - CARD
+      - REPORT
+      - any other text → short help menu
+    Also contains the 2-day / 5-day streak logic.
+    """
+
     # Optional signature check
     if WEBHOOK_APP_SECRET:
         sig256 = request.headers.get("x-hub-signature-256", "")
@@ -215,6 +278,7 @@ def webhook():
     data = request.get_json(silent=True) or {}
     print("Incoming:", json.dumps(data)[:1200], " ...")  # truncated
 
+    # Defensive extraction of messages
     try:
         entry = (data.get("entry") or [])[0]
         changes = (entry.get("changes") or [])[0]
@@ -227,83 +291,33 @@ def webhook():
         return "ok", 200
 
     for msg in messages:
-        # WhatsApp structure
-        from_number = msg.get("from")  # E.164 string without '+'
+        # WhatsApp message structure
+        from_number = msg.get("from")  # sender's WA ID (phone, no '+')
         type_ = msg.get("type")
+
+        # Normalise the text body across text / button / interactive
         text_body = ""
         if type_ == "text":
             text_body = (msg.get("text") or {}).get("body") or ""
         elif type_ == "button":
             text_body = (msg.get("button") or {}).get("text") or ""
         elif type_ == "interactive":
-            # handle interactive reply (list, button) if used
-            inter = msg.get("interactive") or {}
-            # 'button_reply' or 'list_reply'
-            button = inter.get("button_reply") or {}
-            list_reply = inter.get("list_reply") or {}
-            text_body = button.get("title") or list_reply.get("title") or ""
-
-        token = (text_body or "").strip().upper()
-
-        # ---------------- COMMANDS ----------------
-        if token in ("HI", "HELLO", "HELP", "START"):
-            send_text(
-                from_number,
-                "👋 *Welcome to The Potential Company Stamp Card!*\n\n"
-                "Send *STAMP* each visit to collect your stamps.\n"
-                "Send *CARD* to see your current card.\n"
-                "Send *REPORT* for the live dashboard link."
+            interactive = msg.get("interactive") or {}
+            # you can extend if you use replies / lists
+            text_body = (
+                (interactive.get("button_reply") or {}).get("title")
+                or (interactive.get("list_reply") or {}).get("title")
+                or ""
             )
-            return "ok", 200
 
-        if token in ("CARD", "STATUS"):
-            row = fetch_single_customer(from_number)
-            visits = int((row or {}).get("number_of_visits", 0))
-            visits = max(0, min(10, visits))
-            send_image(from_number, build_card_url(visits))
-            send_text(from_number, f"Current stamps: *{visits}*")
-            return "ok", 200
+        text_lower = text_body.strip().upper()
 
-        if token == "REPORT":
-            # Simple example analytics
-            try:
-                all_rows = sb.table("customers").select("customer_id").execute().data or []
-            except Exception as e:
-                print("report select total error:", e)
-                all_rows = []
-            total_customers = len(all_rows)
-
-            seven_days_ago_iso = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat() + "Z"
-            try:
-                act_rows = (
-                    sb.table("customers")
-                    .select("customer_id")
-                    .gte("last_visit_at", seven_days_ago_iso)
-                    .execute()
-                    .data
-                    or []
-                )
-            except Exception as e:
-                print("report select active error:", e)
-                act_rows = []
-            active_count = len(act_rows)
-            growth_pct = (active_count / total_customers * 100) if total_customers > 0 else 0.0
-
-            report_text = (
-                "📊 *Here's your dashboard*\n\n"
-                f"Active customers (last 7 days): {active_count}\n"
-                f"Growth vs total: {growth_pct:.1f}%\n\n"
-                f"Dashboard: {DASHBOARD_URL}"
-            )
-            send_text(from_number, report_text)
-            return "ok", 200
-
-        # ---------------- CORE VISIT LOGIC (STAMP/SALE) ----------------
-        if token in ("STAMP", "SALE"):
-            # Fetch current row
-            row = fetch_single_customer(from_number)
-            current_visits = int((row or {}).get("number_of_visits", 0))
-            last_visit_at = (row or {}).get("last_visit_at")
+        # -------------------- STAMP FLOW --------------------------------------
+        if text_lower == "STAMP":
+            # Fetch existing customer row, if any
+            customer = fetch_single_customer(from_number)
+            current_visits = customer.get("number_of_visits", 0) if customer else 0
+            last_visit_at = customer.get("last_visit_at") if customer else None
 
             # Compute streak & update streak table to today
             streak_days = get_and_update_streak(from_number, last_visit_at)
@@ -329,47 +343,77 @@ def webhook():
             new_visits = current_visits + add_stamps
             now_iso = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
             try:
-                sb.table("customers").upsert({
-                    "customer_id": from_number,
-                    "number_of_visits": new_visits,
-                    "last_visit_at": now_iso
-                }).execute()
+                sb.table("customers").upsert(
+                    {
+                        "customer_id": from_number,
+                        "number_of_visits": new_visits,
+                        "last_visit_at": now_iso,
+                    }
+                ).execute()
             except Exception as e:
-                print("customers upsert error:", e)
-                send_text(from_number, "⚠️ Sorry, I couldn't record your visit. Please try again.")
-                return "ok", 200
+                print("STAMP upsert error:", e)
 
-            # Send correct card (0..10)
-            card_visits = max(0, min(10, new_visits))
-            send_image(from_number, build_card_url(card_visits))
+            # Send updated card image
+            media_url = build_stamp_card_url(new_visits)
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": from_number,
+                "type": "image",
+                "image": {
+                    "link": media_url,
+                    "caption": f"You now have *{new_visits}* stamp(s). 10 stamps = 1 free coffee ☕",
+                },
+            }
+            send_whatsapp_message(payload)
+            continue
 
-            # Reward / acknowledgement
-            if new_visits >= 10:
-                send_text(from_number, "🎉 *Free coffee unlocked!* Show this to the barista.")
-            else:
-                delta_txt = "+2 (double!)" if add_stamps == 2 else "+1"
-                send_text(
-                    from_number,
-                    f"Thanks for your visit — {delta_txt}\n"
-                    f"Current total: *{new_visits}* stamp(s)."
-                )
-            return "ok", 200
+        # -------------------- CARD FLOW ---------------------------------------
+        if text_lower == "CARD":
+            customer = fetch_single_customer(from_number)
+            visits = customer.get("number_of_visits", 0) if customer else 0
+            media_url = build_stamp_card_url(visits)
 
-        # Unknown command -> brief help
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": from_number,
+                "type": "image",
+                "image": {
+                    "link": media_url,
+                    "caption": f"You currently have *{visits}* stamp(s). 10 stamps = 1 free coffee ☕",
+                },
+            }
+            send_whatsapp_message(payload)
+            continue
+
+        # -------------------- REPORT FLOW -------------------------------------
+        if text_lower == "REPORT":
+            # Simple text with a link to your static dashboard
+            send_text(
+                from_number,
+                "📊 *Here’s your dashboard*\n\n"
+                f"{DASHBOARD_URL}\n\n"
+                "You can see:\n"
+                "• Total cards\n"
+                "• Stamps issued & redeemed\n"
+                "• Redemption rate & ROI\n"
+            )
+            continue
+
+        # -------------------- HELP / DEFAULT ----------------------------------
         send_text(
             from_number,
-            "🤖 I didn’t recognise that.\n\n"
-            "• Send *STAMP* to collect a stamp\n"
-            "• Send *CARD* to see your card\n"
-            "• Send *REPORT* for the dashboard"
+            "👋 *Welcome to the Demo Coffee Shop stamp card!*\n\n"
+            "You can send:\n"
+            "• *STAMP* – log a visit and collect a stamp\n"
+            "• *CARD* – see your current stamp card\n"
+            "• *REPORT* – open the live dashboard\n"
         )
-        return "ok", 200
 
     return "ok", 200
 
 
 # ----------------------------- WSGI ENTRYPOINT -------------------------------
-# For gunicorn: `gunicorn --bind 0.0.0.0:$PORT app:app`
+# For gunicorn on Render: `gunicorn --bind 0.0.0.0:$PORT app:app`
 if __name__ == "__main__":
     # Local run
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=True)
