@@ -27,8 +27,8 @@ DASHBOARD_URL = os.getenv(
 )
 
 # Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://lhbtgjvejsnsrlstwlwl.supabase.co")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxoYnRnanZlanNuc3Jsc3R3bHdsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjE4NjMyNCwiZXhwIjoyMDcxNzYyMzI0fQ.6Fc20YQezPUX0LqfybirrHzj9eynstHijTx2gDxKr7M")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY in env!")
