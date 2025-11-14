@@ -177,27 +177,18 @@ def verify_meta_signature(raw_body: bytes, signature_256: str) -> bool:
 # ----------------------------- STREAK LOGIC -----------------------------------
 def get_and_update_streak(customer_id: str) -> Tuple[int, bool, bool]:
     """
-    Streak helper backed by the `customer_streaks` table.
+    Maintain a visit-based streak backed by the `customer_streaks` table.
 
-    Table schema used:
-      - customer_id (text, PK-ish)
-      - streak_days (int)
-      - last_day (date)
-      - updated_at (timestamptz)  <-- maintained for debugging / audit
+    The data model keeps the original `streak_days` column for backwards
+    compatibility, but we now treat it as a simple "consecutive visits" counter.
+    Every STAMP call increments the streak so that multiple same-day visits still
+    advance the 2-visit encouragement and 5-visit reward milestones.
 
-    Behaviour:
-      - If last_day == today               → streak stays the same
-        (multiple stamps in the same day do NOT increase the streak).
-      - If last_day == yesterday           → streak_days += 1
-      - Otherwise (gap / no row)          → streak_days = 1
-
-    Returns:
-      (new_streak_days, hit_2_today, hit_5_today)
-      where `hit_2_today` is True only when the streak *first* reaches 2,
-      and `hit_5_today` is True only when the streak *first* reaches 5.
+    Returns a tuple of:
+      (new_streak, hit_2_now, hit_5_now)
+    where each boolean is True only the first time the streak reaches that
+    milestone.
     """
-
-    today = datetime.date.today()
 
     # --- Load existing row (if any) ---
     try:
@@ -216,58 +207,31 @@ def get_and_update_streak(customer_id: str) -> Tuple[int, bool, bool]:
 
     prev_streak = row.get("streak_days", 0) if row else 0
 
-    # Parse last_day to date
-    last_day = None
-    if row and row.get("last_day"):
-        raw_last_day = row["last_day"]
+    # Increment the streak for every recorded visit. If data is missing or the
+    # row was absent, treat this as the first visit.
+    new_streak = (prev_streak or 0) + 1
 
-        # Supabase can return DATE columns either as date objects or strings in
-        # a variety of ISO formats (e.g. "2024-05-30", "2024-05-30T00:00:00+00:00").
-        # Normalise to a YYYY-MM-DD string before parsing so that we reliably
-        # detect consecutive-day streaks.
-        try:
-            if isinstance(raw_last_day, datetime.date):
-                last_day = raw_last_day
-            else:
-                raw_str = str(raw_last_day).strip()
-                # Keep only the date portion if a timestamp is returned.
-                if "T" in raw_str:
-                    raw_str = raw_str.split("T", 1)[0]
-                elif " " in raw_str:
-                    raw_str = raw_str.split(" ", 1)[0]
-                last_day = datetime.date.fromisoformat(raw_str)
-        except Exception:
-            last_day = None
-
-    # --- Compute new streak based on last_day ---
-    if last_day == today:
-        # Already visited today → streak unchanged
-        new_streak = prev_streak or 1
-    elif last_day == today - datetime.timedelta(days=1):
-        # Consecutive day → increment streak
-        new_streak = (prev_streak or 1) + 1
-    else:
-        # Break in streak or first visit
-        new_streak = 1
-
-    # Flags for messages – only when we *first* reach 2 or 5
-    hit_2_today = (new_streak == 2 and prev_streak < 2)
-    hit_5_today = (new_streak == 5 and prev_streak < 5)
+    # Flags for milestone messaging – only when we *first* reach 2 or 5 visits.
+    hit_2_now = (new_streak >= 2 and prev_streak < 2)
+    hit_5_now = (new_streak >= 5 and prev_streak < 5)
 
     # --- Upsert new streak state ---
     try:
+        now_iso = datetime.datetime.utcnow().isoformat() + "Z"
         sb.table("customer_streaks").upsert(
             {
                 "customer_id": customer_id,
-                "last_day": today.isoformat(),
+                # Persist the new semantics in the existing column so older dashboards
+                # continue to render without schema changes.
                 "streak_days": new_streak,
-                "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "last_day": now_iso,
+                "updated_at": now_iso,
             }
         ).execute()
     except Exception as e:
         print("get_and_update_streak: upsert error:", e)
 
-    return new_streak, hit_2_today, hit_5_today
+    return new_streak, hit_2_now, hit_5_now
 
 
 # ----------------------------- ROUTES -----------------------------------------
@@ -357,29 +321,29 @@ def webhook():
             current_visits = customer.get("number_of_visits", 0) if customer else 0
 
             # Compute streak & update `customer_streaks` to today
-            streak_days, hit_2_today, hit_5_today = get_and_update_streak(from_number)
+            streak_days, hit_2_now, hit_5_now = get_and_update_streak(from_number)
 
             # Decide how many stamps to add today
             add_stamps = 1
 
             # Send streak encouragement messages only when the streak *hits*
             # that value, not on every subsequent STAMP.
-            if hit_2_today:
+            if hit_2_now:
                 send_text(
                     from_number,
-                    "🔥 *You’re on a 2-day streak!* 🔥\n\n"
-                    "Keep it going — reach *5 days* and earn an *extra stamp* 🏆"
+                    "🔥 *You’re on a 2-visit streak!* 🔥\n\n"
+                    "Keep it going — reach *5 visits* and earn an *extra stamp* 🏆"
                 )
 
-            if hit_5_today:
-                add_stamps = 2  # double stamp for the 5th consecutive day
+            if hit_5_now:
+                add_stamps = 2  # double stamp for the 5th consecutive visit
                 send_text(
                     from_number,
-                    "🏆 *Day 5 Streak!* 🏆\n\n"
-                    "You’ve unlocked *double stamps today* — this visit counts as *+2* and "
+                    "🏆 *5-Visit Streak!* 🏆\n\n"
+                    "You’ve unlocked *double stamps today* — this check-in counts as *+2* and "
                     "your exclusive *coffee bag reward*!\n"
                     "Keep the momentum going!\n"
-                    "_(Double applies to today’s visit only.)_"
+                    "_(Double applies to this visit only.)_"
                 )
 
             # Upsert visit tally + timestamp (UTC)
